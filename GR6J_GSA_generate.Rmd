@@ -11,6 +11,8 @@ knitr::opts_chunk$set(echo = TRUE)
  
  This code generates "target.N" parameter combinations and then runs GR6J for each combination. Output is then used as Input for GSA calculations using GR6J_GSA_evaluate.Rmd.
  
+ To run this code, the entire file needs to be knitted.  The execution of single chunks will not work.
+ 
 User needs to manually specify values for two objects, Target.N and choice
 (1) Specify the value for target.N in Chunk 1 Packages and Paths
 (2) Set choice equal to one of 4 options:  Morris, Sobol, VARS.TO, or Regression. 
@@ -42,7 +44,7 @@ verbose <- TRUE
 
 #--- Set number of combination and choose type of SA -------------
 target.N  <- 1000 
-choice    <- "Morris"
+choice <- "Morris"
 # choice <- "Sobol"
 # choice <- "VARS.TO"
 # choice <- "Regression"
@@ -463,12 +465,13 @@ switch(choice,
 
 <hr style="border:2px solid blue">
 
-### 9. Making multiple runs with different param combinations, and selecting output to use for SA
+### 9. Making multiple runs with different param combinations, and selecting output to use for tGSA
 ```{r, 9. Multiple Runs, eval=TRUE, echo=TRUE}
 
 # Drier and wetter periods
 chosen.vars       <- c("PR","Q9","Qsim")
-chosen.dates.char <- c("2014-08-28", "2018-07-15","2014-10-06", "2014-10-08")
+# chosen.dates.char <- c("2014-08-28", "2018-07-15","2014-10-06", "2014-10-08")
+chosen.dates.char <- c("2018-07-15","2014-08-28")
 
 num.vars      <- length(chosen.vars)
 num.dates     <- length(chosen.dates.char)

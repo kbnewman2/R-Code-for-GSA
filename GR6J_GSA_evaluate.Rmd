@@ -11,7 +11,9 @@ knitr::opts_chunk$set(echo = TRUE)
 
 Note: The folders used by GR6J_GSA_generate are again used here.
 
- This code takes GR6J output and calculates GSA measures. User selects one of the following: Morris, Sobol, VARS-TO, Regression, Regression Tree & Random Forest together, or Gaussian Process Regression. 
+ This code takes GR6J output and calculates GSA measures. User selects one of the following: Morris, Sobol, VARS-TO, Regression, Regression Tree & Random Forest together, or Gaussian Process Regression.
+ 
+ As for the "generate" code, knit the entire file at once, not by individual chunks.
  
 Because of computational expense, GPR uses on n=500 randomly selected combinations from target,N specified in GR6J_GSA_generate.
 
@@ -37,7 +39,7 @@ choice <- "Morris"
 # choice <- "Sobol"
 # choice <- "VARS.TO"
 # choice <- "Reg.analysis"
-#  choice <- "RegTree.RF.analysis"
+# choice <- "RegTree.RF.analysis"
 #  choice <- "GPR.analysis"
 
 root       <- "D:/GR6J/"
@@ -162,7 +164,7 @@ switch(choice,
 cat("full ymat \n")
 head(ymat)
 
-#ymat <- ymat[,4:6] # used in paper
+ymat <- ymat[,1:3] # data used in paper
 num.outputs  <- ncol(ymat)
 output.names <- dimnames(ymat)[[2]]
 
@@ -452,125 +454,8 @@ print(names(Sobol.indices.list))
     print(p3)
    dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
    
-   i <- 4
-  #cat("\n **************  Results for output",output.names[i])
-   indices <- Sobol.indices.list[[i]]
-   cols <- colnames(indices$results)[1:5]
-   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
-   ind.dummy <- sobol_dummy(Y = y, N=N,params=par.names,
-                              boot = TRUE,R = R)
-    p4 <- plot(indices,dummy=ind.dummy)+
-     ggtitle(label=output.names[i]) +   guides(scale="none")
-    print(p4)
-   dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
    
-   i <- 5 
-  #cat("\n **************  Results for output",output.names[i])
-   indices <- Sobol.indices.list[[i]]
-   cols <- colnames(indices$results)[1:5]
-   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
-   ind.dummy <- sobol_dummy(Y = y, N=N,params=par.names,
-                              boot = TRUE,R = R)
-    p5 <- plot(indices,dummy=ind.dummy)+
-     ggtitle(label=output.names[i]) +   guides(scale="none")
-    print(p5)
-   dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
-   
-   i <- 6
-  #cat("\n **************  Results for output",output.names[i])
-   indices <- Sobol.indices.list[[i]]
-   cols <- colnames(indices$results)[1:5]
-   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
-   ind.dummy <- sobol_dummy(Y = y, N=N,params=par.names,
-                              boot = TRUE,R = R)
-    p6 <- plot(indices,dummy=ind.dummy)+
-     ggtitle(label=output.names[i]) +   guides(scale="none")
-    print(p6)
-   dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
-   
-    i <- 7
-  #cat("\n **************  Results for output",output.names[i])
-   indices <- Sobol.indices.list[[i]]
-   cols <- colnames(indices$results)[1:5]
-   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
-   ind.dummy <- sobol_dummy(Y = y, N=N,params=par.names,
-                              boot = TRUE,R = R)
-    p7 <- plot(indices,dummy=ind.dummy)+
-     ggtitle(label=output.names[i]) +   guides(scale="none")
-    print(p7)
-   dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
-   
-    i <- 8
-  #cat("\n **************  Results for output",output.names[i])
-   indices <- Sobol.indices.list[[i]]
-   cols <- colnames(indices$results)[1:5]
-   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
-   ind.dummy <- sobol_dummy(Y = y, N=N,params=par.names,
-                              boot = TRUE,R = R)
-    p8 <- plot(indices,dummy=ind.dummy)+
-     ggtitle(label=output.names[i]) +   guides(scale="none")
-    print(p8)
-   dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
-   
-    i <- 9
-  #cat("\n **************  Results for output",output.names[i])
-   indices <- Sobol.indices.list[[i]]
-   cols <- colnames(indices$results)[1:5]
-   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
-   ind.dummy <- sobol_dummy(Y = y, N=N,params=par.names,
-                              boot = TRUE,R = R)
-    p9 <- plot(indices,dummy=ind.dummy)+
-     ggtitle(label=output.names[i]) +   guides(scale="none")
-    print(p9)
-   dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
-   
-    i <- 10
-  #cat("\n **************  Results for output",output.names[i])
-   indices <- Sobol.indices.list[[i]]
-   cols <- colnames(indices$results)[1:5]
-   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
-   ind.dummy <- sobol_dummy(Y = y, N=N,params=par.names,
-                              boot = TRUE,R = R)
-    p10 <- plot(indices,dummy=ind.dummy)+
-     ggtitle(label=output.names[i]) +   guides(scale="none")
-    print(p10)
-   dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
-   
-     i <- 11
-  #cat("\n **************  Results for output",output.names[i])
-   indices <- Sobol.indices.list[[i]]
-   cols <- colnames(indices$results)[1:5]
-   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
-   ind.dummy <- sobol_dummy(Y = y, N=N,params=par.names,
-                              boot = TRUE,R = R)
-    p11 <- plot(indices,dummy=ind.dummy)+
-     ggtitle(label=output.names[i]) +   guides(scale="none")
-    print(p11)
-   dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
-   
-     i <- 12
-  #cat("\n **************  Results for output",output.names[i])
-   indices <- Sobol.indices.list[[i]]
-   cols <- colnames(indices$results)[1:5]
-   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
-   ind.dummy <- sobol_dummy(Y = y, N=N,params=par.names,
-                              boot = TRUE,R = R)
-    p12 <- plot(indices,dummy=ind.dummy)+
-     ggtitle(label=output.names[i]) +   guides(scale="none")
-    print(p12)
-   dev.copy2pdf(file=paste0(Output,"GR6J_Sobol_",output.names[i],".pdf"))
-   
-  #Print all on one page. Just Qsim
-  pdf(file=paste0(Output,"Sobol_GR6J.pdf"))
-  #grid.arrange(p1, p2, p3,p4,p5,p6, 
-  #             p7, p8, p9,p10,p11,p12,
-  #           ncol = 3, nrow = 4)
-   grid.arrange(p3,p6,p9,p12,
-             ncol = 2, nrow = 2)
-  # dev.copy2pdf(file=paste0(Output,"Sobol_GR6J.pdf"))
-  dev.off()
-   
-   if(KGE.switch) {
+    if(KGE.switch) {
   
     cat("**** Plotting Sobol based on KGE ***** \n")
    #---------- Repeat w/ KGE ----------------------------------
