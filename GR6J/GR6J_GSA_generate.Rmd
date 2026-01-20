@@ -1,0 +1,593 @@
+---
+title: "GR6J_GSA_generate"
+author: "Ken Newman and Shaini Naha"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+ 
+ This code generates "target.N" parameter combinations and then runs GR6J for each combination. Output is then used as Input for GSA calculations using GR6J_GSA_evaluate.Rmd.
+ 
+ To run this code, the entire file needs to be knitted.  The execution of single chunks will not work.
+ 
+User needs to manually specify values for two objects, Target.N and choice
+(1) Specify the value for target.N in Chunk 1 Packages and Paths
+(2) Set choice equal to one of 4 options:  Morris, Sobol, VARS.TO, or Regression. 
+Note: Regression yields GR6J output that can be used for Multiple Regression, Regression Trees, Random Forests, and Gaussian Process Regression.
+ 
+Several R packages will be needed and are loaded in Chunk 1.  If using R Studio, a message will appear if the package needs to be installed. 
+
+User needs to create a "Root Folder" with 3 subfolders named R Code, Data, and Output: 
+In Output folder create 6 subfolders, 1_Morris, 2_Sobol, 3_VARS.TO, 4_Regression, 5_RegTree_RF, 6_GPReg.
+
+R Code folder should contain this code, GR6J_GSA_generate.Rmd.
+
+Data folder should have Coull_GR6J_R.xlsx. 
+
+Notes: 
+(1) Currently outputs 3 variables on 4 dates, 3*4=12 outputs. GR6J_GSA_evaluate.Rmd selects just one date for analysis by default.
+(2) Set verbose=TRUE (in Chunk 1) for more details.
+(3) Can turn off Chunk 7. EDA on Trial Run output (eval=FALSE) to reduce output
+(4) For real data run (default), Chunk 8A is off and Chunk 8B is on.
+  
+<hr style="border:2px solid blue">
+
+### 1. Packages and Paths
+```{r, 1. Initial, eval=TRUE, include=FALSE, warning=FALSE,messages=FALSE}
+dir.create(tempdir())
+t1 <- proc.time()[3]
+
+verbose <- TRUE
+
+#--- Set number of combination and choose type of SA -------------
+target.N  <- 1000 
+# choice <- "Morris"
+choice <- "Sobol"
+# choice <- "VARS.TO"
+# choice <- "Regression"
+
+## load packages
+library(airGR)        # Suite of GR Hydrological Models for
+                      # Precipitation-Runoff Modelling
+library(sensitivity)  # Needed for Morris 
+library(sensobol)     # For Sobol and for VARS-TO
+library(lhs)          # Needed for Regression
+library(readxl)       # Needed for reading input data file
+library(dplyr)        # Need n_distinct function
+library(lubridate)
+
+root       <- "D:/GR6J/"
+Rcode.path <- paste0(root,"R Code/") 
+Data.path  <- paste0(root,"Data/")
+Output     <- paste0(root,"Output/")
+
+mytitle <- function(x) graphics::mtext(text=x,side=3,outer=TRUE)
+
+```
+
+<hr style="border:2px solid blue">
+ 
+### 2. Data loading: includes values for performance based SA (NSE/KGE)
+Load catchment data or create BasinObs (data.frame of daily hydrometeorological observations time series)
+```{r, 2. Data Load, eval=TRUE, echo=TRUE}
+#DatesR: dates in the POSIXt format
+#P:      average precipitation [mm/day]
+#T:      catchment average air temperature [???] Optional, required for snow model
+#E:      catchment average potential evapotranspiration [mm/day]
+#Qls:    outlet discharge [l/s]
+#Qmm: -  outlet discharge [mm/day]....only accepts mm/day
+
+BasinObs <- read_excel(paste0(Data.path,"Coull_GR6J_R.xlsx")) 
+BasinObs <- as.data.frame(BasinObs)
+head(BasinObs,n=3) 
+tail(BasinObs,n=3)
+
+# Copy PE_oudin into E column
+BasinObs$E <- BasinObs$PE_oudin
+
+if(verbose) { 
+  # Plot the precipitation and outflow (Qmm) 
+  plot(BasinObs$DatesR,BasinObs$P,type="l",main="Coull precip")
+  dev.copy2pdf(file=paste0(Output,"Coull_precip.pdf"))
+  
+  plot(BasinObs$DatesR,BasinObs$Qmm,type="l",
+       main="Coull outflow (Qmm)")
+  abline(v=c("2014-08-28", "2018-07-15","2014-10-06",
+             "2014-10-08"),col="red")
+  dev.copy2pdf(file=paste0(Output,"Coull_outflow.pdf"))
+}
+
+```
+
+<hr style="border:2px solid blue">
+
+### 3. Default Params, Parameter ranges
+```{r, 3. Param Info, eval=TRUE, echo=TRUE}
+
+Param <- c(
+  X1 = 83.9,         #Production store capacity (mm); non-linear soil moisture accounting store, in/out
+  X2 = -0.000060406, #Intercatchment exchange coefficient [mm/d] 
+  X3 = 17.20137837,  #Routing store Capacity (mm)
+  X4 = 1.397012823,  #Unit hydrograph time constant [d]
+  X5 = 1.998,        #Intercatchment, or groundwater exchange threshold/function [-]  
+  X6 = 34)           #Exponential store depletion coefficient [mm]
+#These default values are obtained from "calibrated parameter set for GR6J" at Dee at Woodend (NRFA gauging site) (EFLAG paper, Hannaford et al.,2021)
+num.params <- length(Param)
+par.names  <- names(Param)
+
+# Parameter Ranges calculated
+ParamBounds <- c(
+   0.00,1460.00,   #X1
+  -1.80,   2.51,   #X2
+   0.99, 983.52,   #X3
+   0.84,  19.56,   #X4
+  -2.00,   2.00,   #X5
+   0.31, 262.43)   #X6
+ 
+# Note this is transpose of SearchRanges, which is needed for Calibration
+ParamBounds <- matrix(data=ParamBounds,nrow=2,ncol=num.params,
+          byrow=FALSE,dimnames=list(c("Lo","Hi"),par.names))
+print(ParamBounds)
+
+ParamRanges <- ParamBounds[2,]-ParamBounds[1,] 
+
+```
+
+<hr style="border:2px solid blue">
+
+### 4. Sets number of combinations based on Target.N 
+```{r, 4. num.comb, message=FALSE, eval=TRUE}
+
+Morris.eval     <- FALSE; Morris.echo     <- FALSE
+Sobol.eval      <- FALSE; Sobol.echo      <- FALSE
+VARS.TO.eval    <- FALSE; VARS.TO.echo    <- FALSE
+Regression.eval <- FALSE; Regression.echo <- FALSE
+
+# Note: save intermediate outputs, etc for later read by GR6J_GSA_evaluate.Rmd
+# To have number of combinations similar
+# Morris: N * (#parameters +1)
+# Sobol: N * (#parameters +2)
+# VARS_TO: star.centers*(#parameter * (1/h-1)+1)
+# Regression:  target.N exactly
+ switch(choice,
+    Morris = {
+       Morris.eval <- TRUE;   Morris.echo <- TRUE
+       Output <- paste0(Output,"1_Morris/")
+       num.reps    <- ceiling(target.N/(num.params+1))
+       if(verbose) cat(choice,"#reps=",num.reps,"\n") 
+       num.comb    <- num.reps*(num.params+1)
+     },
+    
+    Sobol = {
+      Sobol.eval <- TRUE; Sobol.echo <- TRUE
+      Output <- paste0(Output,"2_Sobol/")
+      N <- ceiling(target.N/(num.params+2))
+      num.comb <- N*(num.params+2)
+      # changing num.comb = target.N
+      num.comb <- target.N
+      cat("Sobol, number of runs=",num.comb)
+     },
+
+    VARS.TO = {    
+      VARS.TO.eval <- TRUE; VARS.TO.echo <- TRUE
+      Output <- paste0(Output,"3_VARS.TO/")
+      h <- 0.10
+      star.centers <- ceiling(target.N/(num.params*(1/h-1)+1))
+      num.comb <- star.centers*(num.params*(1/h-1)+1)
+      # number of combinations = N.star * (#params * (1/h-1) + 1)
+      # e.g., 10 * (12 * (1/0.1 - 1) + 1) = 1090
+    },
+    
+    Regression = {
+      Regression.eval <- TRUE; Regression.echo <- TRUE
+      Output <- paste0(Output,"4_Regression/")
+      num.comb <- target.N
+    }
+  )
+  cat(choice,"The number of combinations will be=",num.comb,"\n")
+
+```
+
+<hr style="border:2px solid blue">
+
+### 5. Create InputsModel object and set dates of (a) warmup and (b) run
+```{r, 5. Prepare InputModel object, eval=TRUE, echo=TRUE}
+InputsModel<- airGR::CreateInputsModel(FUN_MOD = RunModel_GR6J, 
+                DatesR  = BasinObs$DatesR,
+                Precip  = BasinObs$P, 
+                PotEvap = BasinObs$E)
+
+#run period selection; the which statements below are pulling
+# out the position in the DatesR vector corresponding to named
+# calendar dates 
+ 
+# Warmup period is 1 Jan 2013 - 31 Dec 2013.   
+Ind_Runwarm <- seq(which(format(BasinObs$DatesR,
+        format = "%Y-%m-%d")=="2013-01-01"),
+        which(format(BasinObs$DatesR,
+                format = "%Y-%m-%d")=="2013-12-31"))
+
+cat(head(Ind_Runwarm,n=3),"...",tail(Ind_Runwarm,n=3),"\n")
+
+# Simulation period is 1 Jan 2014 - 31 Dec 2020
+Ind_Run <- seq(which(format(BasinObs$DatesR,
+        format = "%Y-%m-%d")=="2014-01-01"),
+         which(format(BasinObs$DatesR,
+              format = "%Y-%m-%d")=="2020-12-31"))
+head(Ind_Run, n=3) 
+
+```
+
+<hr style="border:2px solid blue">
+
+### 6. Set RunOptions object and make a Trial Model Run
+```{r, 6. Initialize and Run GR6J, eval=TRUE,echo=TRUE}
+#IniStates: the initial states of the 2 unit hydrographs (20 + 40 = 60 units)
+#IniResLevels: the initial levels of the production and routing stores
+#IndPeriod_Run: 
+#IndPeriod_WarmUp: the warm up period used to run the model, 
+#----to be defined in the same format as IndPeriod_Run
+#----default setting ensures a one-year warm up using the time steps preceding the IndPeriod_Run, if available
+
+RunOptions<- airGR::CreateRunOptions(
+        FUN_MOD       = RunModel_GR6J,
+        InputsModel   = InputsModel,    #made above w/ CreateInputsModel
+        IndPeriod_Run = Ind_Run,        #Date sequence created above
+        IniStates     = NULL, 
+        IniResLevels  = NULL, 
+        IndPeriod_WarmUp = Ind_Runwarm) #Date sequence created above
+
+#class(RunOptions) # "RunOptions" "daily"      "GR"
+# RunOptions  # Yields lots of output, several "list" components
+# summary(RunOptions)
+
+#Running GR6J:  warmup period excluded
+GR6J_Results <- airGR::RunModel(
+  InputsModel = InputsModel,    #Created above by CreateInputsModel
+  RunOptions  = RunOptions,     #Created above by CreateRunOptions
+  Param       = Param,          #Created above
+  FUN_MOD     = RunModel_GR6J) 
+#class(GR6J_Results) # "OutputsModel" "daily"        "GR"
+```
+
+<hr style="border:2px solid blue">
+
+### 7. EDA on Trial Run output time series and relationships
+```{r, 7. Plot Outputs, eval=TRUE, echo=TRUE}
+# Examine the outputs 
+# See ?RunModel_GR6J for details on outputs
+
+# Outputs List with 23 components: 2-21 are physical object timeseries 
+# Shaini identified 12 as "important"
+# 1. Prod	[numeric] series of production store level (S) [mm]
+# 2. Pn	[numeric] series of net rainfall (Pn) [mm/d]
+# 3. Ps	[numeric] series of the part of Pn filling the production store (Ps) [mm/d]
+# 4. AE	[numeric] series of actual evapotranspiration [mm/d]
+# 5. Perc	[numeric] series of percolation (Perc) [mm/d]
+# 6. PR	[numeric] series of Pr=Pn-Ps+Perc (Pr) [mm/d]
+# 7. Q9	[numeric] series of UH1 outflow (Q9) [mm/d]
+# 8. Q1	[numeric] series of UH2 outflow (Q1) [mm/d]
+# 9. Rout	[numeric] series of routing store level (R1) [mm]
+# 10. QR	[numeric] series of routing store outflow (Qr) [mm/d]
+# 11. Qsim	[numeric] series of simulated discharge (Q) [mm/d]
+# 12. QD	[numeric] series of direct flow from UH2 after exchange [mm/d]
+ 
+##  [1] "DatesR"     "PotEvap"    "Precip"     "Prod"       "Pn"        
+##  [6] "Ps"         "AE"         "Perc"       "PR"         "Q9"        
+## [11] "Q1"         "Rout"       "Exch"       "AExch1"     "AExch2"    
+## [16] "AExch"      "QR"         "QRExp"      "Exp"        "QD"        
+## [21] "Qsim"       "RunOptions" "StateEnd"
+
+# Work with results from previous chunk.
+z <- GR6J_Results 
+print(names(z))
+cat("Length of time series for each output type=",length(z$Prod),
+    "days or",round(length(z$Prod)/365.25),"Years \n")
+
+selected.output <- names(z)[c(3,2,5,6,7,4,8,9,      #8
+                              10,11,                #2
+                              12,19,18,17,20,21)]   #6 = 16 total
+output.names <- c("Precipitation (P)","Evapotranspiration (E)",
+     "Net Precip (Pn)","Precip filling Production Store (Ps)",
+     "Actual Evap (AE)","Production Store (S)","Percolation (Perc)",
+     "Precip Routed (Pr)",
+     "Q9","Q1",
+     "Routing Store (R1)","Exponential Store","QrExp","Qr","Qd","Q")
+
+print("Start dates=")
+print(z$DatesR[1:2])
+
+par(mfrow=c(2,2),oma=c(0,0,3,0))
+for(i in 1:16) {
+  plot(z$DatesR,z[[selected.output[i]]],xlab="Date",ylab="",
+  main=paste(i,output.names[i]),type="l")
+}
+par(mfrow=c(1,1))
+
+#--- Checks on Inputs and Outputs
+par(mfrow=c(2,2))
+# Look at difference between Precip and Evapotranspiration
+plot(z$DatesR,z$Precip - z$PotEvap,xlab="Dates",ylab="P-E",
+     main="P - E time series")
+abline(h=0,col="blue")
+
+# Check on Pr calculation
+y <- z$PR
+x <- z$Pn-z$Ps+z$Perc
+plot(x,y,xlab="Pr",ylab="",
+     main="Pr vs Calculated Pr (Pn-Ps+Perc)");abline(0,1)
+
+# Relating Q9 to sum of R1 and R2 (Rout and Exp)
+plot(x=z$Rout+z$Exp,y=z$Q9,xlab="Rout+Exp",ylab="",main="Q9 vs R1+R2")
+abline(0,1,col="blue")
+
+# Check on Qsim calculation
+y <- z$Qsim
+x <- z$QR+z$QD + z$QRExp
+plot(x,y,xlab="Qsim",ylab="",
+     main="Qsim vs QR+QD+QRExp");abline(0,1)
+```
+
+<hr style="border:2px solid blue">
+
+Only run 8A or 8B, not both
+
+### 8A. Simple Latin Hypercube Sampling=>param combos matrix (then #9)
+```{r, 8A. Param combo gen,eval=FALSE, echo=FALSE}
+
+  #Use LHS to generate sample of parameter values
+  #15 August 2023: Changed to maximinLHS
+  # Assuming that Parameter_list.rdata has object X = matrix (n x #params)
+  num.comb <- target.N
+  out <- lhs::maximinLHS(n=num.comb,k=num.params)
+  par.sample <- out
+  for(i in 1:num.params) {
+     par.sample[,i] <- ParamBounds[1,i] + ParamRanges[i]*out[,i]
+  }
+  apply(par.sample,2,range)
+  par.sample <- data.matrix(par.sample, rownames.force = NA)
+  head(par.sample,n=4)
+  
+```
+
+<hr style="border:2px solid blue">
+
+### 8B. Real Run: Generating parameter combinations for Morris, Sobol, Variogram SA, or Regression. Then run in #9.
+The total number of parameter combinations gets set here.
+```{r, 8B. Param combinations, eval=TRUE}
+# -------- Block for choices on data gen per SA method ----
+# In every case, produces matrix par.sample[,], rescaled from [0,1]
+ 
+# set.seed(1301)
+switch(choice,
+ Morris = {
+  num.levels  <- 30  # set 28 Jul 2025
+  cat(choice,"The number of combinations will be=",num.comb,"\n")
+  grid.jump   <- round(num.levels/2)
+  low.set     <- ParamBounds[1,]   
+  hi.set      <- ParamBounds[2,]
+  binf        <- rep(0,num.params)
+  bsup        <- rep(1,num.params)
+
+  x.Morris<- sensitivity::morris(
+      model=NULL,
+      factors=num.params,
+      r=num.reps,
+      design=list(type="oat",levels=num.levels,grid.jump=grid.jump),
+      binf=binf,bsup=bsup)
+  
+      par.sample <- x.Morris$X
+      cat("range in number of distinct parameter values \n")
+      print(range(apply(par.sample,2,dplyr::n_distinct)))
+  },
+
+ Sobol = {
+   R <- NULL
+   order <- "first"
+   cat(choice,"The number of combinations will be=",
+       num.comb,"\n")
+   par.sample <-
+      sensobol::sobol_matrices(N=N,params=par.names,order=order)
+   cat("Sobol: targetN=",num.comb,"actual numb.comb=",
+       nrow(par.sample),"\n")
+  },
+
+ VARS.TO = {
+   # Need to save star.centers and h to file for reading by vars_to
+   cat(choice,"The number of combinations will be=",num.comb,"\n")
+   par.sample <-
+     sensobol::vars_matrices(star.centers=star.centers,h=h,
+                            params=par.names)
+   },
+ 
+  Regression = { 
+   par.sample <- lhs::maximinLHS(n=num.comb,k=num.params)
+   dimnames(par.sample) <- list(NULL,par.names)
+ }
+)
+# -------- End Block for choices on data gen per SA method ----
+
+ # Now rescale each column of the parameter combos matrix
+ for(i in 1:num.params) {
+   par.range <- diff(ParamBounds[,i])
+   par.sample[,i] <- par.sample[,i]*par.range +
+                           ParamBounds[1,i]
+ }
+  
+ # After rescaling the parameter combinations
+  dimnames(par.sample)  <- list(NULL,par.names)
+
+ # "bandaid"---change all cases with 0's to epsilon
+  epsilon <- 0.01
+  epsilon.par.combos <- par.sample
+  zero.cases         <- epsilon.par.combos==0
+  cat("#cases w/ zeros=",sum(zero.cases),"\n")
+  epsilon.par.combos[zero.cases] <- epsilon
+  par.sample <- epsilon.par.combos
+  
+  # Save the inputs to *_comb.RData
+  switch(choice,
+         Morris = {
+           save(x.Morris,num.comb,par.sample,par.names,
+            file=paste0(Output,"Morris_GR6J_comb.RData")) },
+
+         Sobol = {
+             save(N,R,order,num.comb,par.sample,par.names,
+              file=paste0(Output,"Sobol_GR6J_comb.RData"))
+         },
+
+         VARS.TO = {
+              save(num.comb,par.sample,par.names,
+                         star.centers,h,
+               file=paste0(Output,"varsto_GR6J_comb.RData"))
+         },
+
+      Regression = {
+            save(num.comb,par.sample,par.names,
+            file=paste0(Output,"regression_GR6J_comb.RData"))
+        }
+      )
+    
+    
+    if(verbose) {
+      par(mfrow=c(2,3),oma=c(0,0,3,0))
+      for(i in 1:num.params) {
+        hist(par.sample[,i],main=par.names[i],xlab="",ylab="")
+      }
+      mytitle(paste("Dist'ns of",num.comb,
+                    "parameter values for",choice))
+    }
+  
+```
+
+<hr style="border:2px solid blue">
+
+### 9. Making multiple runs with different param combinations, and selecting output to use for tGSA
+```{r, 9. Multiple Runs, eval=TRUE, echo=TRUE}
+
+# Drier and wetter periods
+chosen.vars       <- c("PR","Q9","Qsim")
+# chosen.dates.char <- c("2014-08-28", "2018-07-15","2014-10-06", "2014-10-08")
+chosen.dates.char <- c("2018-07-15","2014-08-28")
+
+num.vars      <- length(chosen.vars)
+num.dates     <- length(chosen.dates.char)
+var.names     <- outer(chosen.vars,Y=chosen.dates.char,FUN=paste)
+num.outputs   <- length(var.names)
+print(var.names)
+
+ymat <- matrix(data=NA,nrow=num.comb,ncol=num.outputs,
+      dimnames=list(NULL, var.names))
+
+#NOTE: for KGE, just using Qsim, but need to select range of dates,
+# not just a specific day
+ temp <- seq(ymd("2014-01-01"),ymd("2020-12-31"),by=1)
+ KGE.dates.char <- as.character(temp)
+ 
+y.Qsim.mat <- matrix(data=NA,nrow=num.comb,ncol=length(KGE.dates.char),
+                     dimnames=list(NULL,KGE.dates.char))
+
+# *************** Run GR6J ************************* #
+for(i in 1:num.comb) {
+  #changing the parameter combinations at each iteration
+  Param.opt <- par.sample[i,]
+  z <- airGR::RunModel(
+   InputsModel = InputsModel,    #Created above by CreateInputsModel
+   RunOptions  = RunOptions,     #Created above by CreateRunOptions
+   Param       = Param.opt,      
+   FUN_MOD     = RunModel_GR6J)  
+  
+  # this truncates date object to just y-m-d
+  # which is needed for matching by y-m-d, appears to miss dates if
+  # hours, minutes are not = 0!!
+  z$DatesR <- ymd(z$DatesR) 
+  
+  #Extract GR6J output for different variables on different dates and
+  # put into ymat 
+  for(j in 1:num.dates) {
+    # The Dates
+    ok <- z$DatesR==chosen.dates.char[j]
+ 
+    # The Output variable
+    #NOTE Well: to access list components need [ ] operator, not $ !!
+    for(k in 1:num.vars) {
+     y <- unlist(z[chosen.vars[k]])[ok]
+     col.name <- paste(chosen.vars[k],chosen.dates.char[j])
+     ymat[i,col.name] <- y
+   }
+  }
+  
+  # And extract Qsim for KGE work
+  ok <- match(KGE.dates.char,as.character(z$DatesR))
+  y.Qsim.mat[i,] <- unlist(z["Qsim"][ok])
+}
+# print(ymat[c(1:5,(num.comb-4):num.comb),])
+
+if(verbose) {
+  par(mfrow=c(2,2),oma=c(0,0,3,0))
+  for(j in 1:num.dates) {
+    for(k in 1:num.vars) {
+         col.name <- paste(chosen.vars[k],chosen.dates.char[j])
+         y <- ymat[,col.name]  
+         hist(y,xlab=col.name,ylab="",main=paste(col.name))
+    }
+  }
+  mytitle(paste("GR6J Outputs based on",
+                num.comb,"combinations of",num.params,"parameters"))
+  par(mfrow=c(1,1))
+  
+  # cat("output of Qsim for KGE \n")
+  # print(y.Qsim.mat[1:3,1:5])
+  # print(y.Qsim.mat[(num.comb-3):num.comb,1:5])
+}
+
+```
+
+<hr style="border:2px solid blue">
+
+### 10. Saving GR6J outputs
+```{r, 10. Save GR6J outputs,eval=TRUE}
+switch(choice,
+       Morris = {
+          save(ymat,chosen.vars,chosen.dates.char,y.Qsim.mat, 
+          file=paste0(Output,"ymat_Morris_GR6J.Rdata")) 
+         },
+       Sobol = {
+           save(ymat,chosen.vars,chosen.dates.char,y.Qsim.mat, 
+          file=paste0(Output,"ymat_Sobol_GR6J.Rdata")) 
+       },
+       
+       VARS.TO = {
+           save(ymat,chosen.vars,chosen.dates.char,y.Qsim.mat,
+             file=paste0(Output,"ymat_varsto_GR6J.RData"))
+       },
+      
+      Regression = {
+          save(ymat,chosen.vars,chosen.dates.char,y.Qsim.mat,
+             file=paste0(Output,"ymat_regression_GR6J.RData"))
+        }
+      )
+
+
+```
+
+<hr style="border:2px solid blue">
+
+### Elapsed time
+```{r, Elapsed time, eval=TRUE}
+t2 <- proc.time()[3]
+cat("GR6J",choice,"time=",round((t2-t1)/60,2),
+    "Minutes w/",num.comb,
+    "param combos \n")
+## GR6J Morris time= 0.48 Minutes w/ 1001 param combos
+## GR6J Sobol time= 0.48 Minutes w/ 1000 param combos
+## GR6J VARS.TO time= 0.54 Minutes w/ 1045 param combos
+## GR6J Regression time= 0.54 Minutes w/ 1000 param combos
+
+```
+
+
+ 
