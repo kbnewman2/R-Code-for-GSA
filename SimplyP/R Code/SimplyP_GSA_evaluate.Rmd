@@ -1,0 +1,1061 @@
+---
+title: "SimplyP_GSA_evaluate"
+author: "Ken Newman"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+ This code takes SimplyP output and calculates GSA measures. User selects one of the following: Morris, Sobol, VARS-TO, Regression, Regression Tree & Random Forest together, or Gaussian Process Regression.
+ 
+ Note: User specifies GSA option, "choice", in Chunk #1.
+ 
+Key Data Inputs:
+* From SimplyP_GSA_generate, with Morris, for example, Morris_SimplyP_comb.RData, which has num.comb, par.sample, selected.parameters.names.red
+* Also from SimplyP_GSA_generate: ymat_Morris_SimplyP.RData which has ymat,chosen.vars,chosen.dates.char 
+     
+Key Outputs:
+* Morris_Results.RData
+
+ As for the "generate" code, knit the entire file at once, not by individual chunks.
+ 
+Because of computational expense, GPR uses on n=500 randomly selected combinations from target,N specified in GR6J_GSA_generate.
+
+Outputs per GSA method:
+Morris: scatterplots of variance vs mu.star, and barplots of DGSM
+Sobol: barplots of S_{1,k} and T_k
+VARS-TO; barplots of T_k
+Reg: barplots of SRC
+RegTree/Random Forest: Variable importance plots for both; regression tree; In chunk 8 heatswitch <- FALSE to NOT produce heatmap
+GPR:  Inverse range and SRC
+
+           
+### 1. Choose GSA method (choice); load libraries, set directories, read input files
+```{r, 1. Initial,warning=FALSE,message=FALSE}
+t1         <- proc.time()[3]
+verbose    <- TRUE
+heat.tree.switch <- FALSE
+
+#--- Choosing which type of SA -------------
+choice <- "Morris"
+# choice <- "Sobol"
+# choice <- "VARS.TO"
+# choice <- "Reg.analysis"
+# choice <- "RegTree.RF.analysis"
+# choice <- "GPR_analysis"
+
+root        <- "D:/SimplyP/"
+Rcode.path  <- paste0(root,"R Code/") 
+Mobius.path <- paste0(root,"/Mobius/")
+Data.path   <- paste0(root,"Data/")
+Output      <- paste0(root,"Output/")
+Input.Data.Figures <- paste0(Output,"0_Input_Data_plots/")
+ 
+doy.value <- 200 # day of year which will be used for single GSA
+KGE.switch <- FALSE
+
+# Initialization 
+Morris.eval     <- FALSE; Morris.echo     <- FALSE
+Sobol.eval      <- FALSE; Sobol.echo      <- FALSE
+VARS.TO.eval    <- FALSE; VARS.TO.echo    <- FALSE
+Regression.eval <- FALSE; Regression.echo <- FALSE
+RegTree.RF.eval <- FALSE; RegTree.RF.echo <- FALSE
+GPR.eval        <- FALSE; GPR.echo        <- FALSE
+
+library(KenUtilities)
+library(lubridate)
+library(sensobol)
+library(sensitivity)
+library(lhs)
+library(boot)
+library(ggplot2)
+library(gridExtra)
+library(rpart)      # for RegTree 
+library(rpart.plot) # for RegTree visualization
+library(treeheatr)
+library(partykit)
+library(randomForest)
+library(cowplot)
+library(RobustGaSP) # for Gaussian Process Regression
+
+    
+# Kling Gupta Efficiency (original version)
+kge.fun <- function(model,obs) {
+   if(sd(model)!=0) {
+    r <- cor(model,obs,use="complete.obs")
+  } else r <- 0
+  beta <- mean(model)/mean(obs,na.rm=TRUE)
+  alpha <- sd(model)/sd(obs,na.rm=TRUE)
+  KGE <- 1-sqrt((1-r)^2 + (1-beta)^2 + (1-alpha)^2)
+  return(KGE)
+}
+
+# This version handles the NA's, I believe 
+kge2.fun <- function(model,obs) {
+   if(sd(model)!=0) {
+    r <- cor(model,obs,use="complete.obs")
+  } else r <- 0
+ beta <- mean(model)/mean(obs,na.rm=TRUE)
+  alpha <- (sd(model)/mean(model))/(sd(obs,na.rm=TRUE)/mean(obs,na.rm=TRUE))
+  KGE <- 1-sqrt((1-r)^2 + (1-beta)^2 + (1-alpha)^2)
+  return(KGE)
+}
+
+
+# The following sets switches for evaluating/echoing chunks
+  if(choice=="Morris") {
+    Morris.eval <- TRUE
+    Morris.echo <- TRUE
+    Output <- paste0(Output,"1_Morris/")
+    infile1.name <- paste0(Output,"ymat_Morris_SimplyP.RData")
+    infile2.name <- paste0(Output,"Morris_SimplyP_comb.RData")
+  } 
+
+  if(choice=="Sobol") {
+    Sobol.eval <- TRUE
+    Sobol.echo <- TRUE
+    Output <- paste0(Output,"2_Sobol/")
+    infile1.name <- paste0(Output,"ymat_Sobol_SimplyP.RData")
+    infile2.name <- paste0(Output,"Sobol_SimplyP_comb.RData")
+  }  
+
+  if(choice=="VARS.TO") {
+    VARS.TO.eval <- TRUE
+    VARS.TO.echo <- TRUE
+    Output <- paste0(Output,"3_VARS.TO/")
+    infile1.name <- paste0(Output,"ymat_VARSTO_SimplyP.RData")
+    infile2.name <- paste0(Output,"VARSTO_SimplyP_comb.RData")
+ }  
+  
+  if(choice=="Reg.analysis") {
+    Regression.eval <- TRUE
+    Regression.echo <- TRUE
+    Output <- paste0(Output,"4_Regression/")
+    infile1.name <- paste0(Output,"ymat_Regression_SimplyP.RData")
+    infile2.name <- paste0(Output,"Regression_SimplyP_comb.RData")
+  }  
+
+   if(choice=="RegTree.RF.analysis") {  
+     RegTree.RF.eval <- TRUE; RegTree.RF.echo <- TRUE
+     Output.RegTree.RF <-  paste0(Output,"5_RegTree_RF/")
+     Output    <-  paste0(Output,"4_Regression/")
+     infile1.name <- paste0(Output,"ymat_Regression_SimplyP.RData")
+     infile2.name <- paste0(Output,"Regression_SimplyP_comb.RData")
+   }
+
+  if(choice=="GPR_analysis") {  
+     GPR.eval     <- TRUE; GPR.echo <- TRUE
+     GPR.mean     <- TRUE; #if fit the mean
+     Output.GPR   <- paste0(Output,"6_GPR/")
+     Output       <- paste0(Output,"4_Regression/")
+     infile1.name <- paste0(Output,"ymat_Regression_SimplyP.RData")
+     infile2.name <- paste0(Output,"Regression_SimplyP_comb.RData")
+  }
+
+```
+
+<hr style="border:2px solid blue">
+
+### 2. Read in parameter combinations (input to SimplyP runs) and SimplyP output 
+```{r, 2. Load SimplyP output, eval=TRUE, echo=TRUE}
+
+# Loading the Inputs to and Outputs from SimplyP, and Morris info
+# Special handling of Morris
+
+# This has num.comb,par.sample,selected.parameters.names.red
+# w/ Morris: x.Morris
+# w/ Sobol: N,R,order 
+# w/ VARS-TO: star.centers,h
+load(file=infile1.name)
+      
+# This has ymat,chosen.vars,chosen.dates.char
+load(file=infile2.name)
+
+Year.choice <- year(ymd(chosen.dates.char[1]))
+# 4 March 2024: have to create proper names when reduced
+selected.parameters.names <- selected.parameters.names.red
+sorted.param.names        <- sort(selected.parameters.names)
+num.outputs               <- length(chosen.vars)
+output.names              <- chosen.vars
+
+cat("#combinations=",num.comb,"\n")
+cat("parameters varied are \n");print(selected.parameters.names)
+cat("outputs examined are \n"); print(chosen.vars)
+
+```
+
+<hr style="border:2px solid blue">
+
+### 3. Extract Field Observations for KGE calculations
+```{r, 3. Field Data,eval=TRUE,echo=FALSE, warning=FALSE, message=FALSE}
+# Load RData file with Tarland data as a df
+obs.data.file <- paste0(Data.path,"Tarland_data_matrix.RData")
+print(obs.data.file)
+load(file=obs.data.file)
+cat("Top of Tarland data matrix \n")
+print(head(Tarland.data.matrix,n=3))
+
+Date.ts <- as.Date(row.names(Tarland.data.matrix),format="%Y-%m-%d")
+
+start.date <- lubridate::ymd(chosen.dates.char[1])
+end.date   <- lubridate::ymd(chosen.dates.char[2])
+selected.dates <- seq(start.date,end.date,by=1)
+selected.dates.char <- as.character(selected.dates)
+ 
+Obs.log.Q   <- log(Tarland.data.matrix[selected.dates.char,"Obs.Q"]+1)
+Obs.log.SS  <-  Tarland.data.matrix[selected.dates.char,"Obs.log.SS"] # Note this and PP is logged
+Obs.log.TDP <- log(Tarland.data.matrix[selected.dates.char,"Obs.TDP"]+1)
+Obs.log.PP  <-  Tarland.data.matrix[selected.dates.char,"Obs.log.PP"]  
+head(Obs.log.Q)
+obs.matrix  <- cbind(Obs.log.Q,Obs.log.SS,Obs.log.TDP,Obs.log.PP)
+dimnames(obs.matrix) <- list(NULL,output.names)
+
+cat("Size of the obs'n matrix=",dim(obs.matrix),"\n")
+## Size of the obs'n matrix= 366 4
+
+# Time series plots of the observations (logged) 
+#Q.obs.ts <- ts(data=Obs.log.Q,start=start.date,end=end.date)
+#plot(Q.obs.ts,main="Log Q in 2004")
+plot(as.ts(Obs.log.Q),ylab="log Q", main="log Q in 2004")
+abline(v=200,col="blue",lty=2)
+
+  plot(as.ts(Obs.log.SS),ylab="log SS", main="log SS in 2004")
+  abline(v=200,col="blue",lty=2)
+ 
+ plot(as.ts(Obs.log.TDP),ylab="log TDP", main="log TDP in 2004")
+  abline(v=200,col="blue",lty=2)
+ 
+plot(as.ts(Obs.log.PP),ylab="log PP", main="log PP in 2004")
+ abline(v=200,col="blue",lty=2)
+
+```
+
+<hr style="border:2px solid blue">
+
+# 4. Extracting SimplyP outputs for a given doy, ymat.doy  
+```{r,4. SA metric, eval=TRUE,echo=FALSE }
+  #Extract a matrix from 3-D array of outputs
+  ymat.doy         <- t(ymat[,,doy.value])
+  #look at outputs from 5 multiple param combos for just one day
+  head(ymat.doy,n=3)
+
+  # Examine dist'n of Outputs 
+  par(mfrow=c(2,2))
+  for(i in 1:num.outputs) {
+    y <- ymat.doy[,i]
+    hist(y,xlab=output.names[i],ylab="",
+         main=paste("SimplyP Output:",output.names[i]))
+    title(sub=paste("n=",length(y),"min=",round(min(y),2),
+                  "max=",round(max(y),2)))
+  }
+  par(mfrow=c(1,1))
+
+```
+
+<hr style="border:2px solid blue">
+
+### 5. Calculate KGE Metric
+```{r,5. KGE Metric, eval=TRUE, echo=FALSE}
+  # ---------  Working with KGE  -----------------------------
+  # This will calculate across the year
+
+  output.array <- ymat
+  cat("details on output.array=",dim(output.array),"\n")
+  print(output.array[1,1:5,1:10])
+  
+  KGE.metric <- matrix(data=NA,nrow=num.comb,ncol=num.outputs,
+                dimnames=list(NULL,colnames(ymat.doy)))
+  for(j in 1:num.outputs) {
+    for(i in 1:num.comb) {
+      x <- output.array[j,i,]
+      y <- obs.matrix[,j]
+      temp <- kge2.fun(model=x,obs=y)
+      KGE.metric[i,j] <- temp
+     }
+    cat("output=",output.names[j],"KGE summary \n")
+    print(summary(KGE.metric[,j]))
+    
+    if(any(is.na(KGE.metric[,j]))) {
+      cat(output.names[j],
+          "DOING A CLUNKY WORKAROUND DUE TO NAs in KGE \n")
+      temp <- which(is.na(KGE.metric[,j]))
+      KGE.metric[temp,j] <- max(KGE.metric[,j],na.rm=TRUE)
+    print(summary(KGE.metric[,j]))}
+  }
+
+```
+
+<hr style="border:2px solid blue">
+
+### 6. Calculate Morris measures and produce plots
+```{r, 6. Morris measures, eval=Morris.eval, echo=Morris.echo}
+
+# Creating 2 matrices to be filled w/ Morris mustar and sigma
+# 26 Aug 2024: the output.names are names w/ "log"
+  num.outputs      <- ncol(ymat.doy)
+  output.names <- colnames(ymat.doy)
+  if(verbose) {
+    cat("SimplyP Outputs from Morris runs \n")
+    print(output.names)
+  }
+  Morris.Results.mustar <-  matrix(data=NA,
+          nrow=length(selected.parameters.names),
+          ncol=length(output.names))
+  dimnames(Morris.Results.mustar) <-
+    list(selected.parameters.names,output.names)
+  Morris.Results.sigma <- Morris.Results.mu <- 
+    Morris.DGSM <- Morris.Results.mustar
+  D.vector <- numeric(length(output.names))
+  names(D.vector) <- output.names
+
+   cat("Size of ymat.doy",dim(ymat.doy),"\n")
+   head(ymat.doy)
+
+  my.cex <- 0.9
+  my.cex <- 1.1
+  par(mfrow=c(1,1),oma=c(0,0,3,0))
+  for(i in 1:num.outputs) {
+    cat("\n **** Morris",output.names[i],"***** \n")
+    temp <- ymat.doy[,output.names[i]]
+    D.vector[i] <- var(temp)
+      
+    z <- x.Morris
+    tell(x=z,y=temp)
+    #the print command creates a df w/ mu, mu.star, and sigma
+    #  where mu.star is simply the absolute value of mu
+    out <- print(z)
+    row.names(out) <- selected.parameters.names
+    x <- out[,"mu.star"]
+    names(x) <- row.names(out)
+    if(verbose) {
+      cat("------ Largest to smallest mu* \n")
+      print(round(rev(sort(x)),3))
+    }
+    Morris.Results.mustar[,i] <- out[,"mu.star"]
+    Morris.Results.mu[,i]     <- out[,"mu"]
+    Morris.Results.sigma[,i]  <- out[,"sigma"]
+    Morris.DGSM[,i]           <- sqrt(out[,"mu"]^2+out[,"sigma"]^2)
+
+    # values to control plot limits
+    delta.x <- 0.15*(max(out$mu)-min(out$mu))
+    delta.y <- 0.15*(max(out$sigma)-min(out$sigma))
+
+    #my.xlim <- c(min(out$mu)-delta.x, max(out$mu)+delta.x)
+    my.xlim <- c(min(out$mu.star)-delta.x, 1.2*max(out$mu.star))
+    my.ylim <- c(min(out$sigma)-delta.y,max(out$sigma)+delta.y)
+    #plot(out$mu,out$sigma,type="n",xlab=expression(mu),
+    plot(jitter(out[,"mu.star"]),jitter(out[,"sigma"]),type="n",
+         xlab=expression(mu),
+       ylab=expression(sigma),
+       main=paste(output.names[i]),
+       xlim=my.xlim,ylim=my.ylim)
+
+  #text(out$mu,out$sigma,selected.parameters.names,cex=my.cex)
+  for(k in 1:length(selected.parameters.names)) {
+    text(out[,"mu.star"][k],out[,"sigma"][k],
+          selected.parameters.names[k],cex=my.cex)
+     #     selected.parameters.names[k],cex=my.cex,col=k)
+  }
+  
+   dev.copy2pdf(file=paste0(Output,"SimplyP_Morris_mustar_sigma_",
+          output.names[i],"_",doy.value,".pdf"))
+    
+   barplot(Morris.DGSM[,i],main=output.names[i],cex.names=0.7)
+   dev.copy2pdf(file=paste0(Output,"SimplyP_MorrisDGSM_",
+          output.names[i], "_",doy.value,".pdf"))  }
+  par(mfrow=c(1,1))
+
+  #--------------  Repeat the above with KGE -----------
+  if(KGE.switch) {
+    Morris.Results.mustar.KGE <-  Morris.Results.sigma.KGE <-
+      Morris.Results.mu.KGE <- Morris.Results.mustar 
+    cat("Size of KGE.metric",dim(KGE.metric),"\n")
+    head(KGE.metric)
+    pdf(file=paste0(Output,"Morris_SimplyP_mustar_sigma_KGE.pdf"))  
+    my.cex <- 0.9
+    par(mfrow=c(1,1),oma=c(0,0,3,0))
+ 
+    for(i in 1:num.outputs) {
+      cat("\n **** Morris",output.names[i],"KGE ***** \n")
+      temp <- KGE.metric[,output.names[i]]
+      D.vector[i] <- var(temp)
+
+      z <- x.Morris
+      tell(x=z,y=temp)
+      #the print command creates a df w/ mu, mu.star, and sigma
+      #  where mu.star is simply the absolute value of mu
+      out <- print(z)
+      row.names(out) <- selected.parameters.names
+      x <- out[,"mu.star"]
+      names(x) <- row.names(out)
+      if(verbose) {
+        cat("------ Largest to smallest mu* \n")
+        print(round(rev(sort(x)),3))
+      }
+      Morris.Results.mustar.KGE[,i] <- out[,"mu.star"]
+      Morris.Results.mu.KGE[,i]     <- out[,"mu"]
+      Morris.Results.sigma.KGE[,i]  <- out[,"sigma"]
+
+      # values to control plot limits
+      delta.x <- 0.15*(max(out$mu)-min(out$mu))
+      delta.y <- 0.15*(max(out$sigma)-min(out$sigma))
+
+      #my.xlim <- c(min(out$mu)-delta.x, max(out$mu)+delta.x)
+      my.xlim <- c(min(out$mu.star)-delta.x, 1.2*max(out$mu.star))
+      my.ylim <- c(min(out$sigma)-delta.y,max(out$sigma)+delta.y)
+      #plot(out$mu,out$sigma,type="n",xlab=expression(mu),
+      plot(jitter(out[,"mu.star"]),jitter(out[,"sigma"]),type="n",
+         xlab=expression(mu),ylab=expression(sigma),
+         main=paste("KGE",output.names[i]),
+         xlim=my.xlim,ylim=my.ylim)
+
+    #text(out$mu,out$sigma,selected.parameters.names,cex=my.cex)
+    for(k in 1:length(selected.parameters.names)) {
+      text(out[,"mu.star"][k],out[,"sigma"][k],
+          selected.parameters.names[k],cex=my.cex,col=k)
+    }
+
+    mytitle(paste("SimplyP: Morris elem effects with",num.comb,
+                "combos for KGE in",Year.choice))
+    }
+      par(mfrow=c(1,1))
+    dev.off()
+  }
+
+  # ------------------------------------------
+  #write out the Morris results to files for comparison w/ Sobol T_
+  if(KGE.switch) {
+  save(Morris.Results.mustar,Morris.Results.mu,Morris.Results.sigma,
+    Morris.DGSM,
+    Morris.Results.mustar.KGE,Morris.Results.mu.KGE,
+    Morris.Results.sigma.KGE,
+       D.vector,file=paste0(Output,"Morris_SimplyP_Results_doy",
+                            doy.value,".RData"))
+  } else {
+    save(Morris.Results.mustar,Morris.Results.mu,
+      Morris.Results.sigma,
+    Morris.DGSM,file=paste0(Output,"Morris_SimplyP_Results_doy",
+                            doy.value,".RData"))
+  }
+ 
+```
+
+<hr style="border:2px solid blue">
+
+### 7. Sobol plots 
+```{r, 7. Sobol Plots New, eval=Sobol.eval, echo=Sobol.echo, message=FALSE, warning=FALSE}
+ 
+    cat("SimplyP Outputs for",nrow(ymat.doy),"param combos \n")
+    print(round(head(ymat.doy,n=4),3))
+    num.outputs <- ncol(ymat.doy)
+    output.names <- colnames(ymat.doy)
+     
+    type <- "norm"
+    conf <- 0.95
+    order <- "first"
+
+    ## Look at Si, Ti
+    R <- 100 # number of bootstrap replicates
+
+  Sobol.Results.Si <-  matrix(data=NA,
+    nrow=length(selected.parameters.names),ncol=length(output.names),
+    dimnames=list(selected.parameters.names,output.names))
+  Sobol.Results.Ti <- Sobol.Results.Si
+  
+  Sobol.Results.Si.KGE <- Sobol.Results.Ti.KGE <- Sobol.Results.Si
+  
+  Sobol.indices.list <- Sobol.indices.KGE.list <- list()
+  # Loop just to extract indices, w/o plotting
+  for(i in 1:num.outputs) {
+     # First for a doy
+     y <- ymat.doy[,i]
+     indices <- sensobol::sobol_indices(Y=y,N=N,
+          params=selected.parameters.names,
+            order=order, boot=TRUE,R=R,type=type,conf=conf)
+
+     Sobol.indices.list[[i]] <- indices
+     
+     
+     ok <- indices$results$sensitivity == "Si"
+     Sobol.Results.Si[,i] <- indices$results$original[ok]
+     ok <- indices$results$sensitivity == "Ti"
+     Sobol.Results.Ti[,i] <- indices$results$original[ok]
+     
+     if(i==3) {
+       cat("In Sobol, TDP conc, look at the indices$results \n")
+       print(selected.parameters.names)
+       print(indices$results)
+       cat("Si alone \n")
+       print(Sobol.Results.Si[,i])
+       cat("Ti alone \n")
+       print(Sobol.Results.Ti[,i])
+    }
+   
+     #Now w/ KGE
+     y <- KGE.metric[,i]
+     indices <- sobol_indices(Y=y,N=N,
+          params=selected.parameters.names,
+            order=order, boot=TRUE,R=R,type=type,conf=conf)
+
+     Sobol.indices.KGE.list[[i]] <- indices
+     ok <- indices$results$sensitivity == "Si"
+     Sobol.Results.Si.KGE[,i] <- indices$results$original[ok]
+     ok <- indices$results$sensitivity == "Ti"
+     Sobol.Results.Ti.KGE[,i] <- indices$results$original[ok]
+
+  }
+
+  save(Sobol.Results.Si,Sobol.Results.Ti,
+       Sobol.Results.Si.KGE,Sobol.Results.Ti.KGE,
+     file=paste0(Output,"Sobol_SimplyP_Results_",doy.value,".RData"))
+
+  names(Sobol.indices.list) <- output.names
+  
+  # ----- Producing Sobol Sensitivities Plots ---------------- 
+  cat("**** Sobol summaries for all outputs on day",doy.value,"\n")
+  print(round(Sobol.Results.Ti,3))
+  
+  temp <- Sobol.Results.Ti
+  temp <- t(t(temp)/apply(temp,2,sum))
+  cat("**** Scaled Sobol summaries for all outputs on day",doy.value,"\n")
+  print(round(temp,2))
+  
+  # Tedious as looping w/ printing is not working
+   i <- 1
+   cat("\n *******  Results for output",output.names[i])
+   indices <- Sobol.indices.list[[i]]
+   cols <- colnames(indices$results)[1:5]
+   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
+   ind.dummy <- sobol_dummy(Y = y, N=N,
+      params=selected.parameters.names,boot = TRUE,R = R)
+   
+   #ggplot(indices,dummy=ind.dummy) +
+   p1 <- plot(indices,dummy=ind.dummy)  +
+      ggtitle(label=paste( 
+      output.names[i],doy.value)) + guides(scale="none")
+   print(p1)
+   dev.copy2pdf(file=paste0(Output,"SimplyP_Sobol_",
+          output.names[i],"_",doy.value,".pdf"))
+
+   i <- 2
+   cat("\n *******  Results for output",output.names[i])
+   indices <- Sobol.indices.list[[i]]
+   cols <- colnames(indices$results)[1:5]
+   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
+   ind.dummy <- sobol_dummy(Y = y, N=N,
+      params=selected.parameters.names,boot = TRUE,R = R)
+   p2 <- plot(indices,dummy=ind.dummy)+
+        ggtitle(label=paste( 
+      output.names[i],doy.value)) + guides(scale="none")
+    print(p2)
+    dev.copy2pdf(file=paste0(Output,"SimplyP_Sobol_",
+          output.names[i],"_",doy.value,".pdf"))
+ 
+   i <- 3
+   cat("\n *******  Results for output",output.names[i])
+   indices <- Sobol.indices.list[[i]]
+   cols <- colnames(indices$results)[1:5]
+   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
+   ind.dummy <- sobol_dummy(Y = y, N=N,
+        params=selected.parameters.names,boot = TRUE,R = R)
+   cat("details before plot, indices, then ind.dummy \n")
+   print(indices)
+   print(ind.dummy)
+   
+   plot(indices)
+   
+   p3 <- plot(indices,dummy=ind.dummy)+
+      ggtitle(label=paste( 
+      output.names[i],doy.value)) + guides(scale="none")
+   
+   cat("take a look at the ggplot object \n")
+   print(p3)
+   dev.copy2pdf(file=paste0(Output,"SimplyP_Sobol_",
+        output.names[i], "_",doy.value,".pdf"))
+ 
+   i <- 4
+   cat("\n *******  Results for output",output.names[i])
+   indices <- Sobol.indices.list[[i]]
+   cols <- colnames(indices$results)[1:5]
+   indices$results[, (cols):= round(.SD, 3), .SDcols = (cols)]
+   ind.dummy <- sobol_dummy(Y = y, N=N,
+      params=selected.parameters.names, boot = TRUE,R = R)   
+   p4 <- plot(indices,dummy=ind.dummy)+
+       ggtitle(label=paste( 
+       output.names[i],doy.value)) + guides(scale="none")
+   print(p4)
+   dev.copy2pdf(file=paste0(Output,"SimplyP_Sobol_",
+        output.names[i],"_",doy.value,".pdf"))
+
+```
+
+<hr style="border:2px solid blue">
+ 
+### 8. VARS-TO plots 
+```{r, 8. VARS-TO Plots, eval=VARS.TO.eval, echo=VARS.TO.echo}
+# No nice graphical outputs of VARS-TO
+short.out.names <- c("Flow","SS","TDP","PP")
+
+# Writing over output.names
+output.names <- colnames(ymat.doy)
+
+ # Matrix of Ti outputs for between approach comparisons
+  VARS_TO_Results <- matrix(data=NA,
+    nrow=length(selected.parameters.names),
+    ncol=length(output.names))
+  dimnames(VARS_TO_Results) <- list(selected.parameters.names,
+                output.names)
+  VARS_TO_Results_KGE <- VARS_TO_Results 
+  
+ 
+ par(mfrow=c(1,1),oma=c(0,0,3,0))
+ for(i in 1:num.outputs) {
+    cat("\n **** VARS-TO",output.names[i],"***** \n")
+    temp <- ymat.doy[,output.names[i]]
+    ind <- vars_to(Y=temp,star.centers=star.centers,
+                   params=selected.parameters.names,
+                   h=h)
+    print(ind)
+    temp <- ind$results
+    VARS_TO_Results[,i] <- temp$Ti
+    barplot(height=temp$Ti,names.arg=temp$parameters,
+            main=paste("Log",short.out.names[i]),
+            cex.names=0.7)
+    dev.copy2pdf(file=paste0(Output,"SimplyP_VARSTO_",
+        short.out.names[i], "_",doy.value,".pdf"))
+ }
+ par(mfrow=c(1,1))
+ 
+
+ #----- Repeat w/ KGE -----------
+pdf(file=paste0(Output,"VARSTO_SimplyP_KGE.pdf"))
+ par(mfrow=c(1,1),oma=c(0,0,3,0))
+ for(i in 1:num.outputs) {
+    cat("\n **** VARS-TO",output.names[i],"***** \n")
+    temp <- KGE.metric[,output.names[i]]
+    ind <- vars_to(Y=temp,star.centers=star.centers,
+                   params=selected.parameters.names,
+                   h=h)
+    print(ind)
+    temp <- ind$results
+    VARS_TO_Results_KGE[,i] <- temp$Ti
+    barplot(height=temp$Ti,names.arg=temp$parameters,
+            main=paste("VARSTO:",output.names[i],"KGE in",
+                       Year.choice),
+            cex.names=0.5)
+ }
+ mtext(paste("SimplyP-Variogram with",num.comb,
+             "combos, KGE"),outer=TRUE)
+ par(mfrow=c(1,1))
+ dev.off()
+
+ save(VARS_TO_Results,VARS_TO_Results_KGE,
+      file=paste0(Output,"varsto_SimplyP_Results.RData"))
+```
+ 
+<hr style="border:2px solid blue">
+
+### 9. Regression analysis and produce plots
+```{r, 9. Regression Analysis, eval=Regression.eval, echo=Regression.echo}
+short.out.names <- c("Flow","SS","TDP","PP")
+  
+  num.outputs      <- ncol(ymat.doy)
+  output.names <- colnames(ymat.doy)
+  num.params <- length(selected.parameters.names)
+  cat("In reg analysis, num comb=",nrow(ymat.doy),
+      "num outputs=",num.outputs,"\n")
+  cat(" dim of parameter matrix=",dim(par.sample),"\n") 
+ 
+  Regression_Results <- matrix(data=NA,
+    nrow=length(selected.parameters.names),
+    ncol=length(output.names))
+  dimnames(Regression_Results) <- list(selected.parameters.names,
+                                       output.names)
+  Regression_Rsq <- rep(NA,num.outputs)
+  names(Regression_Rsq) <- output.names
+   
+  # 1st w/ doy value 
+  r2.vals <- numeric(length(num.outputs))
+  par(mfrow=c(2,2),oma=c(0,0,3,0))
+  for(i in 1:num.outputs) {
+    y <- ymat.doy[,i]
+    m <- lm(y ~ par.sample)
+    print(summary(m))
+    temp <- summary(m)$coefficients[,"t value"]
+    #print(temp)
+    temp.unsort <- abs(temp[-1])
+    Regression_Results[,i] <- temp.unsort
+    temp <- rev(sort(abs(temp[-1])))
+    names(temp) <- substring(names(temp),first=11)
+    print(round(temp,2))
+    r2.vals[i] <- summary(m)$adj.r.squared
+    Regression_Rsq[i] <- r2.vals[i]
+    plot(m,main=paste("Reg:",output.names[i]))
+   }
+  par(mfrow=c(1,1))
+   
+  # print out the Regression R^2 values
+  cat("Regression R^2 values \n")
+  print(Regression_Rsq)
+  
+for(i in 1:num.outputs) {
+  barplot(Regression_Results[sorted.param.names,i],
+      names.arg=sorted.param.names,
+            main=paste("Log",short.out.names[i]),                                  "DOY=",doy.value,"in",Year.choice),
+           cex.names=0.7)
+  title(sub=paste("R2=",round(r2.vals[i],2)))
+  dev.copy2pdf(file=paste0(Output,"SimplyP_Reg_",
+      short.out.names[i],"_",doy.value,".pdf"))
+}
+
+  
+#------ Repeat w/ KGE ------
+  Regression_Results_KGE <- Regression_Results 
+  Regression_Rsq_KGE <- Regression_Rsq
+  r2.vals.KGE <- numeric(length(num.outputs))
+  par(mfrow=c(2,2),oma=c(0,0,3,0))
+  for(i in 1:num.outputs) {
+    y <- KGE.metric[,i]
+    m <- lm(y ~ par.sample)
+    print(summary(m))
+    temp <- summary(m)$coefficients[,"t value"]
+    Regression_Results_KGE[,i] <- abs(temp[-1])
+    temp <- rev(sort(abs(temp[-1])))
+    names(temp) <- substring(names(temp),first=11)
+    print(round(temp,2))
+    r2.vals.KGE[i] <- summary(m)$adj.r.squared
+    Regression_Rsq_KGE[i] <- r2.vals.KGE[i]
+    plot(m,main=paste("Reg:",output.names[i]))
+   }
+  par(mfrow=c(1,1))
+   
+pdf(file=paste0(Output,"Regression_SimplyP_KGE.pdf"))
+
+for(i in 1:num.outputs) {
+   barplot(Regression_Results_KGE[,i],
+    names.arg=selected.parameters.names,
+    main=paste("Reg:",output.names[i],"KGE in",Year.choice),
+           cex.names=0.5)
+  title(sub=paste("R2=",round(r2.vals.KGE[i],2)))
+}
+dev.off()
+
+#----- save output for KW comparisons
+save(Regression_Results, Regression_Results_KGE,
+      Regression_Rsq, Regression_Rsq_KGE,
+     file=paste0(Output,"Regression_SimplyP_Results.RData"))
+paste0(Output,"Regression_SimplyP_Results.RData")
+
+
+```
+ 
+
+<hr style="border:2px solid blue">
+
+### 10. Reg Tree and Random Forest 
+```{r, 10. Reg Tree and Random Forest, eval=RegTree.RF.eval,echo=RegTree.RF.echo}
+
+heatmap.option <-FALSE 
+
+ymat <- as.matrix(ymat.doy)
+short.out.names <- c("Flow","SS","TDP","PP")
+
+RandomForest_Results <- matrix(data=NA,
+    nrow=length(selected.parameters.names),
+    ncol=length(output.names))
+dimnames(RandomForest_Results) <- list(selected.parameters.names,
+                                       output.names)
+RegTree_Results <- RandomForest_Results
+RegTree_Rsq        <- rep(NA,num.outputs)
+names(RegTree_Rsq) <- output.names
+RF_Rsq             <- RegTree_Rsq
+  
+ par(mfrow=c(2,2),oma=c(0,0,3,0))
+
+ # pull out the "input variables)
+ var.names <- colnames(par.sample)
+ num.var   <- length(var.names)
+ var.df    <- par.sample[,1]
+ for(j in 2:num.var) {
+   var.df <- cbind(var.df,par.sample[,j])
+ }
+ colnames(var.df) <- var.names
+ head(var.df)
+ 
+ # 7 Jan 2026: adjusting parameters ordering to get RF importance dotchart
+ alt.var.df <- var.df[,sorted.param.names]
+ head(alt.var.df)
+ var.df <- alt.var.df
+ 
+ par(mfrow=c(1,1))
+    for(i in 1:num.outputs) {
+    cat("\n ********",output.names[i]," \n")
+    y <- ymat[,i]
+    RegTree.RF.df <- data.frame(y=y,var.df)
+    cat("Top of RegTree.RF dataframe \n")
+    head(RegTree.RF.df)
+
+    #********************* Fitting RegTree ***********************
+    cat("\n Fitting RegTree w/ variable importance shown \n")
+    regtree.out <- rpart(formula=y ~ ., data=RegTree.RF.df)
+    #print(regtree.out)
+    rpart.plot(regtree.out,main=paste("Log",output.names[i]))
+    print(regtree.out$variable.importance)
+    dev.copy2pdf(file=
+      paste0(Output.RegTree.RF,"SimplyP_RegTree_Tree_",short.out.names[i],"_",
+             doy.value,".pdf"))
+    
+    # Look at R^2
+    tmp <- printcp(regtree.out)
+    rsq.val <- 1-tmp[,c(3,4)]  
+    print(rsq.val[nrow(rsq.val),])
+    RegTree_Rsq[i] <- rsq.val[nrow(rsq.val),1]
+    cat("Reg Tree R^2",output.names[i],RegTree_Rsq[i],"\n")
+    
+    print(regtree.out$variable.importance)
+    barplot(height=regtree.out$variable.importance[sorted.param.names],   
+            main=paste("Log",short.out.names[i]),cex.names=0.7)
+    dev.copy2pdf(file=
+      paste0(Output.RegTree.RF,"SimplyP_RegTree_",short.out.names[i],"_",
+             doy.value,".pdf"))
+    
+     # print(names(RegTree.RF.df))
+     ##  [1] "y"            "alpha"        "fquick"       "beta"         "T.g"         
+     ##  [6] "TSa"          "TSsn"         "FCa"          "E.M"          "k.M"         
+     ## [11] "E.PP"         "TDP.g"        "TDP.eff"      "EPC.0.init.a"
+      if(heat.tree.switch & i==1) {
+         # Work with a smaller tree for heatmap 
+         best.predictors <- names(regtree.out$variable.importance[1:5])
+         print(best.predictors)
+         short.df <- RegTree.RF.df[,c("y",best.predictors)]
+         print(head(short.df))
+         if(heatmap.option) {
+          basic.tree <- rpart(formula=y ~ ., data=short.df)
+          party.tree <- as.party(basic.tree)
+          heat.tree  <- heat_tree(x=party.tree,task="regression")
+          print(heat.tree)
+          dev.copy2pdf(file=paste0(Output.RegTree.RF,
+                "SimplyP_RegTree_Tree_heatmap_short_",
+                short.out.names[i],".pdf"))
+        }
+      }
+      
+    RegTree_Results[,i] <- regtree.out$variable.importance[var.names]
+
+    #************** Fitting Random Forest *******************
+     cat("\n ********",output.names[i],"Random Forest w/ all Data \n")
+    RF.out <- randomForest(formula = y ~ .,
+                           data=RegTree.RF.df,importance=TRUE)
+    print(RF.out)
+    
+    summary(RF.out)
+    
+    RF_Rsq[i] <- mean(RF.out$rsq)
+    cat("RF avg R2 for", output.names[i],RF_Rsq[i],"\n")
+    
+    temp <- importance(RF.out)
+    RandomForest_Results[,i] <- temp[,2]
+    
+    order.imp <- order(temp[,2])
+    cat("printing importance of inputs from largest to smallest \n")
+    print(cbind(temp[rev(order.imp), 2]))
+    
+    #Plot Variable Importance
+    temp <- importance(RF.out)
+    cat("printing results from importance call \n")
+    print(temp)
+    print(class(temp))
+    cat("producing the rf importance dotcharts \n")
+    varImpPlot(x=RF.out,
+               main=paste("Log",short.out.names[i]),sort=FALSE)
+    dev.copy2pdf(file=
+      paste0(Output.RegTree.RF,"SimplyP_RF_",short.out.names[i],"_",doy.value,".pdf")) 
+
+    # Training and test sets
+    cat("\n", output.names[i],"RF: Training Set \n")
+    y       <- ymat[,i]
+    N       <- length(y)
+    train.n <- floor(N*0.9)
+    positions <- sample(1:N,size=train.n)
+    rf.train.out <- randomForest(formula = y ~ ., data=RegTree.RF.df[positions,],
+                           importance=TRUE)
+    print(rf.train.out)
+    temp <- importance(rf.train.out)
+    order.imp <- order(temp[,2])
+    print(cbind(temp[rev(order.imp), 2]))
+
+    oos.prediction <- predict(object=rf.train.out,
+              newdata=RegTree.RF.df[-positions,],type="response")
+    x <- y[-positions]
+    y <- oos.prediction
+    r.gof <- cor(x,y)
+    cat("length of predictions=",length(y),"\n")
+    plot(x=x,y=y,
+      xlab="Observed",ylab="Predicted",
+      main=paste(output.names[i],"Out-of-sample Prediction, r=",
+                 round(r.gof,2)))
+    abline(0,1,col="blue")
+
+   }
+  #dev.off()
+ 
+  # Print out RegTree R^2
+  cat("RegTree R^2 \n")
+  print(RegTree_Rsq)
+  
+  # Print out Random Forest R^2
+  cat("RF R^2 \n")
+  print(RF_Rsq)
+
+ # save results 
+save(RandomForest_Results, RegTree_Results, 
+     output.names,num.outputs, # overrides version stored elsewhere
+     file=paste0(Output.RegTree.RF,"RandomForest_SimplyP_Results.RData"))
+
+```
+
+<hr style="border:2px solid blue">
+
+### 11. Gaussian Process Regression
+```{r, 11. GPR, eval=GPR.eval, echo=GPR.echo}
+ # Sample size cannot be "too large", takes very long to fit
+ # GPR.n.size <- 1000  (Took over 45 minutes to NOT fit...)
+
+ GPR.n.size       <- 500
+ num.outputs      <- ncol(ymat.doy)
+ output.names <- colnames(ymat.doy)
+ num.params <- length(selected.parameters.names)
+ cat(" dim of parameter matrix=",dim(par.sample),
+     "Sample size=",GPR.n.size,"\n") 
+
+ GPR_Results_invrange <- matrix(data=NA,
+    nrow=length(selected.parameters.names),
+    ncol=length(output.names))
+ dimnames(GPR_Results_invrange) <- list(selected.parameters.names,
+                                       output.names)
+ GPR_Results_range <- GPR_Results_slope <- GPR_Results_invrange
+  
+  # Using doy value 
+  par(mfrow=c(2,2),oma=c(0,0,3,0))
+  shortened <- sort(sample(1:nrow(ymat.doy),size=GPR.n.size))
+  for(i in 1:num.outputs) {
+    cat("\n ***************Fitting GPR to",output.names[i],
+        " ****** \n")
+    y <- cbind(ymat.doy[,i])[shortened,]
+    input <- par.sample[shortened,]
+     
+    # standardize inputs for getting the comparable slope params
+    # but has no effect on normalized inv range
+    input <- apply(input,2,scale) 
+  
+    X <- cbind(1,input)
+    # Having convergence problems when estimating nugget
+  
+    if(GPR.mean) {
+      GPR <- rgasp(design=input,response=y,trend=X, nugget.est=F,
+                 kernel_type="pow_exp",prior_choice='ref_approx',
+                 lower_bound=FALSE)
+    } else {
+       GPR <- rgasp(design=input,response=y,nugget.est=F,
+                 kernel_type="pow_exp",prior_choice='ref_approx',
+                 lower_bound=FALSE)
+    }
+    
+    cat("\n ******",output.names[i]," Summary Output from fitting \n")
+    summary(GPR)
+  
+    # print(slotNames(m))
+    ##  [1] "p"   "num_obs" "input" "output"  "X"      
+    ##  [6] "zero_mean"  "q"   "LB"     "beta_initial" "beta_hat"    
+    ## [11] "log_post"  "R0"  "theta_hat"    "L"     "sigma2_hat"  
+    ## [16] "LX"   "CL"  "nugget"  "nugget.est"   "kernel_type" 
+    ## [21] "alpha"        "method"       "isotropic"    "call"  
+    # theta_hat has the slope estimates
+    # beta_hat is the inverse of the range parameter
+    
+    if(GPR.mean) {
+      slope.ests <- slot(GPR,"theta_hat")
+      names(slope.ests) <- c("b0",selected.parameters.names)
+      cat("slope estimates \n")
+      print(round(slope.ests,3))
+      GPR_Results_slope[,i] <- slope.ests[-1]  # Remove intercept
+     }
+    
+    # Save the range parameters
+    GPR_Results_range[,i] <- 1/slot(GPR,"beta_hat")
+    cat("\n ****",output.names[i]," Range parameters \n")
+    print(GPR_Results_range[,i])
+    
+    cat("\n **** Results from running findInertInputs \n")
+    inert.inputs <- findInertInputs(GPR)
+    cat("inert inputs \n")
+    names(inert.inputs) <- selected.parameters.names
+    print(round(inert.inputs,3))
+    GPR_Results_invrange[,i] <- inert.inputs
+   } # End of looping over Output variables
+  
+  par(mfrow=c(1,1))
+   
+
+ #----- save output for KW comparisons
+save(GPR_Results_invrange,GPR_Results_slope,GPR_Results_range, 
+     file=paste0(Output.GPR,"GPR_SimplyP_Results.RData"))
+ 
+#load(file=paste0(Output,"Regression_SimplyP_Results.RData"))
+
+```
+ 
+<hr style="border:2px solid blue">
+
+### 12. GPR output
+```{r, 12. GPR output, eval=GPR.eval,echo=GPR.echo}
+# GPR_Results_invrange,GPR_Results_slope, 
+load(file=paste0(Output.GPR,"GPR_SimplyP_Results.RData"))
+ 
+par(mfrow=c(1,1))
+
+for(i in 1:num.outputs) {
+  # barplot(GPR_Results_invrange[,i],names.arg=selected.parameters.names,
+   barplot(GPR_Results_invrange[,i][sorted.param.names],
+           names.arg=sorted.param.names,
+      main=paste("GPR inv range:",output.names[i],
+      "DOY=",doy.value,"in",Year.choice),cex.names=0.5)
+   dev.copy2pdf(file=paste0(Output.GPR,"SimplyP_GPR_InvRange_",
+                            output.names[i],"_",doy.value,".pdf"))
+}
+ 
+  if(GPR.mean) {
+   for(i in 1:num.outputs) {
+    #barplot(abs(GPR_Results_slope[,i]),names.arg=selected.parameters.names,
+    barplot(abs(GPR_Results_slope[,i])[sorted.param.names],
+            names.arg=sorted.param.names,
+       main=paste("GPR abs slope:",output.names[i],
+       "DOY=",doy.value,"in",Year.choice),cex.names=0.5)
+     dev.copy2pdf(file=paste0(Output.GPR,"SimplyP_GPR_Slope_",
+                            output.names[i],"_",doy.value,".pdf"))
+   }
+  }
+ 
+```
+
+
+<hr style="border:2px solid blue">
+
+### Elapsed Time 
+```{r, Elapsed Time, eval=TRUE}
+t2 <- proc.time()[3]
+cat(choice,"Elapsed time=",round((t2-t1)/60,1),
+    "minutes for",num.comb, "combos \n")
+
+## Morris Elapsed time= 0.1 minutes for 1008 combos
+## Sobol Elapsed time= 0.2 minutes for 1005 combos
+## Reg.analysis Elapsed time= 0.1 minutes for 1000 combos
+## RegTree.RF.analysis Elapsed time= 0.4 minutes for 1000 combos
+##  >25 minutes #if use full heatmap
+## GPR_analysis Elapsed time = 7.9 minutes (500)
+
+```
+ 

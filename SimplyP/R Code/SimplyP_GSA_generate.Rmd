@@ -1,0 +1,1056 @@
+---
+title: "SimplyP_GSA_generate"
+author: "K. Newman"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This code makes multiple runs with SimplyP with "target.N" parameter
+combinations (where combinations depend on the GSA method), and produces saved output for GSA calculations in SimplyP_GSA_evaluate.Rmd. 
+
+ To run this code, the entire file needs to be knitted.  The execution of single chunks will not work.
+ 
+In Chunk #0, user needs to: 
+(1) Specify the value for target.N.  
+(2) Select choice equal to one of 4 options:  Morris, Sobol, VARS.TO, or Regression. Regression yields output that can be used for Multiple Regression, Regression Trees, Random Forests, and Gaussian Process Regression.
+(3) Also specify Packages and Paths.
+ 
+User needs to create a "Root Folder" (edit the line root <- "D:/SimplyP/"). In that Root Folder create 3 subfolders named R Code, Data, and Output. 
+
+A. R Code folder should contain this code, SimplyP_GSA_generate.Rmd, as well as SimplyP_GSA_evaluate.Rmd.
+
+B. Data folder should have Tarland_data_matrix.RData, TarlandInputs.dat, and TarlandParameters_v0-4.dat. 
+
+C. In Output folder create 6 subfolders, 1_Morris, 2_Sobol, 3_VARS.TO, 4_Regression, 5_RegTree_RF, 6_GPReg.
+
+Also in that Root Folder, place the complete Mobius Folder that is available on the GitHub site. This has 4 sub-folders: Applications, Modules, RWrapper, and Src. Also needed are the files mobius.h, mobius_dll.h, and Rcpp.h.  The Rccp package is needed and one must have installed RTools Toolchain. The call pkgbuild::find_rtools() will return TRUE if this is properly installed.
+
+<hr style="border:2px solid blue">
+
+### 0. Specify target and GSA option. Load libraries and set paths.
+```{r,Load Libraries, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+ t1         <- proc.time()[3]
+ verbose    <- FALSE
+
+ target.N       <- 1000 
+
+#--- Choosing type of GSA -------------
+choice <- "Morris"
+# choice <- "Sobol"
+# choice <- "VARS.TO"
+# choice <- "Regression"
+
+root        <- "D:/SimplyP/"
+Rcode.path  <- paste0(root,"R Code/") 
+Mobius.path <- paste0(root,"/Mobius/")
+Data.path   <- paste0(root,"Data/")
+Output      <- paste0(root,"Output/")
+Input.Data.Figures <- paste0(Output,"0_Input_Data_plots/")
+
+library('Rcpp')
+library(pkgbuild)
+library(devtools)
+library(installr)
+library(tidyverse)
+library(tinytex)
+library(lhs)
+library(sensitivity)  # Needed for Morris (can also do Sobol)
+library(sensobol)     # For Sobol (S_i & T_i) and for Variogram
+ 
+mytitle <- function(x) graphics::mtext(text=x,side=3,outer=TRUE)
+
+Tarland_Par_File_Name    <- paste0(Data.path,'TarlandParameters_v0-4.dat')
+Tarland_Inputs_File_Name <- paste0(Data.path,'TarlandInputs.dat') 
+
+# This brings in the R function SimplyP_Run for running SimplyP
+# Need functions rev.zero.one() and SimplyP_Run()
+source(paste0(Rcode.path,"SimplyP_Utility_Functions.R"))
+
+# Rtools is only needed for Windows
+pkgbuild::find_rtools()  # [1] TRUE
+
+ # Hardwiring the num.params.red to 13; but will get overwritten later
+ num.params.red <- 13
+ 
+ switch(choice,
+    Morris = {
+       Output <- paste0(Output,"1_Morris/")
+       num.reps    <- ceiling(target.N/(num.params.red+1))
+       if(verbose) cat(choice,"#reps=",num.reps,"\n") 
+       num.comb    <- num.reps*(num.params.red+1)
+     },
+    
+    Sobol = {
+      #Note: number of parameter combinations = N/(num.params+2)
+      Output <- paste0(Output,"2_Sobol/")
+      N <- ceiling(target.N/(num.params.red+2))
+      num.comb <- N*(num.params.red+2)
+     },
+
+    VARS.TO = {    
+      Output <- paste0(Output,"3_VARS.TO/")
+      h <- 0.10
+      star.centers <- ceiling(target.N/(num.params.red*(1/h-1)+1))
+      num.comb <- star.centers*(num.params.red*(1/h-1)+1)
+    },
+    
+    Regression = {
+      Output <- paste0(Output,"4_Regression/")
+      num.comb <- target.N
+    }
+  )
+  cat(choice,"The number of combinations will be=",num.comb,"\n")
+
+```
+
+<hr style="border:2px solid blue">
+
+### 1. Mobius compilation of SimplyP. (Note: This cannot be cached.)
+```{r, Mobius SimplyP, eval=TRUE, echo=FALSE}
+# This takes a while: look in non-Console window of SourceCpp
+
+Rcpp::sourceCpp(paste0(Mobius.path,'RWrapper/mobius_r.cpp'))
+
+# This has brought in the following 10 functions
+##  1. L 81  "mobius_setup_from_parameter_and_input_file"    
+##  2. L 98  "mobius_setup_from_parameter_file_and_input_series"
+##  3. L 119 "mobius_run_model"  # Produces a 36 line file called run.R 
+##  4. L 128 "mobius_get_result_series" 
+##  5. L 146 "mobius_set_parameter_double"   
+##  6. L 157 "mobius_set_parameter_uint"  
+##  7. L 168 "mobius_set_parameter_bool" 
+##  8. L 179 "mobius_set_parameter_time"
+##  9. L 193 "mobius_run_with"     
+## 10. L 245 "mobius_print_result_structure"                    
+                             
+  # the source code for mobius_run_model is in D:/Mobius-master/mobius_model_run.h
+  # which then contains RunModel(mobius_data_set *DataSet)
+
+# More about C code: In mobius_r.cpp have #include "../mobius.h" 
+# Mobius/mobius.h  has some error handling functions, and "Src/mobius_math.h"...
+
+# - use the following function to get details on output/Results options
+# Magnus: .. give you the names of all the outputs and their indexing requirements.
+# for some reason, within Markdown, not able to print out (in usual way)
+# but did this w/i Console instead
+# x <- mobius_print_result_structure()
+# print(x)
+
+# > mobius_print_result_structure()
+# 
+# **** Result Structure ****
+# []
+# 	-----
+# 	Potential evapotranspiration
+# 	Precipitation falling as snow
+# 	Precipitation falling as rain
+# 	Potential daily snowmelt
+# 	Snow melt
+# 	Snow depth as water equivalent
+# 	Hydrological input to soil box
+# 	Quick flow
+# 	Infiltration
+# 	-----
+# 
+# [Landscape units]
+# 	----- Solver "SimplyQ land solver"
+# 	Soil water flow
+# 	Evapotranspiration
+# 	(ODE) Soil water volume
+# 	(ODE) Daily mean soil water flow
+# 	-----
+# 	Time dependent vegetation cover factor
+# 	Soil water EPC0
+# 	Soil TDP mass
+# 	Soil water TDP concentration
+# 	Soil TDP output
+# 	Soil labile P mass
+# 	Soil labile P concentration
+# 	-----
+# 
+# [Landscape units][Reaches]
+# 	-----
+# 	Sediment input coefficient
+# 	Reach PP input coefficent
+# 	-----
+# 
+# [Reaches]
+# 	-----
+# 	(Cumulative) Landuse weighted soil water flow
+# 	Flow input from upstream
+# 	(Cumulative) Sediment input coefficient summed over land classes
+# 	Reach sediment input (upstream flux)
+# 	Reach TDP input from upstream
+# 	Reach PP input from upstream
+# 	(Cumulative) Total soil TDP output
+# 	(Cumulative) Reach PP input coefficent summed over landscape units
+# 	----- Solver "SimplyQ reach solver"
+# 	Groundwater flow
+# 	Flow input from land
+# 	Reach flow (end-of-day)
+# 	Erosion factor
+# 	Reach suspended sediment flux
+# 	Reach sediment input (erosion and entrainment)
+# 	Reach TDP flux
+# 	Reach PP flux
+# 	Reach TDP input from catchment
+# 	Reach PP input from erosion and entrainment
+# 	(ODE) Groundwater volume
+# 	(ODE) Reach volume
+# 	(ODE) Reach flow (daily mean, cumecs)
+# 	(ODE) Reach suspended sediment mass
+# 	(ODE) Reach daily mean suspended sediment flux
+# 	(ODE) Reach TDP mass
+# 	(ODE) Reach PP mass
+# 	(ODE) Reach daily mean TDP flux
+# 	(ODE) Reach daily mean PP flux
+# 	-----
+# 	Reach flow (daily mean, mm/day)
+# 	Reach suspended sediment concentration
+# 	Reach daily mean TP flux
+# 	Reach daily mean SRP flux
+# 	Reach TDP concentration
+# 	Reach PP concentration
+# 	Reach TP concentration
+# 	Reach SRP concentration
+# 	-----
+
+```
+
+<hr style="border:2px solid blue">
+
+### 2. Specify 39 parameter names
+```{r, 2. Name Params, eval=TRUE, echo=FALSE}
+none <- vector(mode='character', length=0)
+
+# Parameter names
+all.param.names <- c(
+  # SNOW
+  "Initial snow depth as water equivalent",        # 1, D_{snow,0}
+  "Degree-day factor for snowmelt",                # 2, f_{DDSM}
+  
+  # HYDROLOGY
+  "Proportion of precipitation that contributes to quick flow", #3, f_{quick}
+  "PET multiplication factor",                     # 4, alpha
+  "Soil field capacity",                           # 5, FC
+  "Baseflow index",                                # 6, beta 
+  "Groundwater time constant",                     # 7, T_g
+  "Minimum groundwater flow",                      # 8, Q_{g,min}
+  "Manning's coefficient",                         # 9
+  "Dynamic erodibility",                           #10
+  
+  # SEDIMENT 
+  "Reach sediment input scaling factor",           #11, E_M
+  "Sediment input non-linear coefficient",         #12, k_M
+  
+  # ??
+  "Day of year when soil erodibility is at its max for spring-grown crops", #13
+  "Day of year when soil erodibility is at its max for autumn-grown crops", #14
+  "Soil mass per m2",                              #15
+  
+  # PHOSPHOROUS
+  "Phosphorous sorption coefficient",              #16
+  "Net annual P input to agricultural soil",       #17
+  "Net annual P input to newly-converted soil",    #18
+  "Groundwater TDP concentration",                 #19, TDP_{g}
+  "Particulate P enrichment factor",               #20, E_{PP}
+  "SRP fraction",                                  #21
+  "Newly-converted type",                          #22
+  "Dynamic soil water EPC0, TDP and soil labile P",#23, EPC_{0,init}
+  
+   # OTHER
+  "Run in calibration mode",                       #24
+  "Catchment area",                                #25
+  "Reach length",                                  #26
+  "Reach slope",                                   #27
+  "Initial in-stream flow",                        #28
+  "Proportion of spring grown crops",              #29
+  "Reach effluent TDP inputs",                     #30, TDP_{eff}
+  "Is input to water body",                        #31
+  "Land use proportions",                          #32
+  "Mean slope of land in the subcatchment",        #33
+  "Land use proportions from newly-converted",     #34
+  "Soil water time constant",                      #35, T_S (A,S)
+  "Vegetation cover factor",                       #36
+  "Reduction of load in sediment",                 #37
+  "Initial soil water TDP concentration and EPC0", #38, EPC_{0,init}
+  "Initial total soil P content")                  #39
+
+ttl.params <- length(all.param.names)
+cat("Number of parameters=",ttl.params,"\n")
+if(verbose) {
+  cat("All parameters named \n")
+  print(cbind(all.param.names))
+}
+ 
+```
+
+<hr style="border:2px solid blue">
+
+### 3. Selected Parameters  
+```{r, 3. Selected Params, eval=TRUE, echo=FALSE}
+
+# There are 17 parameters, but only 13 unique "sets" as
+# there is linkage of values across some landuse indices:
+# T_S  Soil water time constant  same for Arable and IG
+# FC, Field Capacity value same for Arable, IG, and S-N
+# EPC_{0,init}, Initial soil water TDP concentration and EPC0, Arable=IG
+# Create separate chunk below that removes "linked" portions
+
+# The parameters 
+selected.parameters <- c(   
+  "PET multiplication factor",                  # 4,  alpha 
+  "Proportion of precipitation that contributes to quick flow",# 3,  f_{quick}
+  "Baseflow index",                             # 6,  beta
+  "Groundwater time constant",                  # 7,  T_g
+  "Soil water time constant",                   # 35, T_S (Arable)
+  "Soil water time constant",                   # 35, T_S (IG)
+  "Soil water time constant",                   # 35, T_S (Semi-nat)
+  "Soil field capacity",                        # 5,  FC (Arable)
+  "Soil field capacity",                        # 5,  FC (IG)
+  "Soil field capacity",                        # 5,  FC (Semi-nat)
+  "Reach sediment input scaling factor",        # 11, E_M
+  "Sediment input non-linear coefficient",      # 12, k_M
+  "Particulate P enrichment factor",            # 20, E_{PP}
+  "Groundwater TDP concentration",              # 19, TDP_{g}
+  "Reach effluent TDP inputs",                  # 30, TDP_{eff}
+  "Initial soil water TDP concentration and EPC0",# 38, EPC_{0,init},A
+  "Initial soil water TDP concentration and EPC0" # 38, EPC_{0,init},IG
+  )
+selected.parameters.names <-
+  c("alpha","fquick","beta","T.g","TSa","TSig","TSsn",
+    "FCa","FCig","FCsn","E.M","k.M","E.PP","TDP.g","TDP.eff",
+    "EPC.0.init.a","EPC.0.init.ig")
+
+# Note: none of these parameters have multiple indices
+selected.parameters.indices <- list(
+ "PET multiplication factor"= "none",                      # alpha 
+ "Proportion of precipitation that contributes to quick flow"= "none", # fquick
+ "Baseflow index"="none",                                  # beta
+ "Groundwater time constant"="none",                       # T,g
+ "Soil water time constant A"="Arable",                    # TSa
+ "Soil water time constant IG"="Improved grassland",       # TSig
+ "Soil water time constant SN"="Semi-natural",             # TSsn
+ "Soil field capacity A"="Arable",                         # FCa
+ "Soil field capacity IG"="Improved grassland",            # FCig
+ "Soil field capacity SN"="Semi-natural",                  # FCsn
+ "Reach sediment input scaling factor"="none",             # E.M
+ "Sediment input non-linear coefficient"="none",           # k.M
+ "Particulate P enrichment factor"="none",                 # E.PP
+ "Groundwater TDP concentration"="Coull",                    # TDP.g
+ "Reach effluent TDP inputs"="Coull",                        # TDP.eff
+ "Initial soil water TDP concentration and EPC0 A"="Arable", # EPC.0.init.a
+ "Initial soil water TDP concentration and EPC0 IG"="Improved grassland") #EPC.0.init.ig
+ 
+num.params <- length(selected.parameters)
+
+# Updating Lower and Upper Bounds 
+params.default <- c(1.0,0,0.6,100,rep(2,2),7,
+                    rep(290,3),4.5,2,1.2,0.02,0.1,0.1,0.1)
+
+# Updated values, 14 August 2024, for all 17 parameters; 4 replicated
+params.low  <- c(0.75,0.0,0.2, 20,rep(0.1,2), 3,rep(50,3),
+                    2,1.5,1,0.005,0.05,rep(0.03,2))
+params.high <- c(1.25,0.1,0.9,200,rep(3.0,2),10,rep(500,3),
+                    6,3.0,5,0.030,0.20,rep(0.2,2))
+names(params.low) <- names(params.default) <-
+  names(params.high) <- selected.parameters.names
+ 
+cat("Parameter ranges \n")
+print(cbind(params.low,params.high))
+
+cat(num.params,length(params.default),length(params.low),
+    length(params.high),"\n")
+
+if(verbose) {
+
+ cat("The number of parameters for SA =",num.params,"\n")
+ cat("The classes associated with each parameter \n")
+ print(selected.parameters.indices)
+ cat("Check on length=",length(selected.parameters.indices),"\n")
+ cat("example extraction, component 5 \n")
+ print(selected.parameters.indices[[5]])
+ 
+ print(cbind(params.default,params.low,params.high))
+}
+
+
+```
+
+<hr style="border:2px solid blue">
+
+### 4. 60 output names  
+```{r, 4. Output Names, eval=TRUE, echo=FALSE}
+# Output variables' names: 60 total
+# 15 Feb 2024:  these will need to be renamed for Version 0.4....
+
+all.output.names <- c( 
+  # Hydrology (13)
+  'Agricultural soil water flow',
+  'Agricultural soil water volume',
+  'Semi-natural soil water flow',
+  'Semi-natural soil water volume',
+  'Landuse weighted soil water flow',
+  'Groundwater flow',
+  'Groundwater volume',
+  'Reach flow input from upstream',
+  'Reach flow input from land',
+  'Reach volume',
+  "Reach flow (end-of-day)",
+  "Reach flow (daily mean, cumecs)",
+  "Reach flow (daily mean, mm/day)",
+
+  #  Sediment (12)
+  "Time dependent vegetation cover factor",
+  "Time dependent vegetation cover factor",
+  "Time dependent vegetation cover factor",
+  'Sediment input coefficient',
+  'Sediment input coefficient',
+  'Sediment input coefficient',
+  'Sediment input coefficient summed over land classes',
+  'Reach suspended sediment flux',
+  'Reach sediment input (erosion and entrainment)',
+  'Reach suspended sediment mass',
+  'Reach daily mean suspended sediment flux',
+  'Reach suspended sediment concentration',
+
+  # Phosphorus (29)
+  'Soil phosphorous sorption coefficient',
+  'Agricultural soil water EPC0',
+  'Agricultural soil TDP mass',
+  'Agricultural soil labile P mass',
+  'Newly-converted soil water flow',
+  'Newly-converted soil water volume',
+  'Newly-converted soil water EPC0',
+  'Newly-converted soil TDP mass',
+  'Newly-converted soil labile P mass',
+  'Agricultural soil water TDP concentration',
+  'Agricultural soil water TDP concentration',
+  'Agricultural soil water TDP concentration',
+  'Agricultural soil water EPC0 in mg/l',
+  'Agricultural soil water EPC0 in mg/l',
+  'Agricultural soil water EPC0 in mg/l',
+  'Agricultural soil labile P concentration',
+  'Agricultural soil labile P concentration',
+  'Agricultural soil labile P concentration',
+  'Reach TDP flux',
+  'Reach TDP mass',
+  'Reach TDP concentration',
+  'Reach daily mean TDP flux',
+  'Reach PP flux',
+  'Reach PP mass',
+  'Reach PP concentration',
+  'Reach daily mean PP flux',
+  'Reach daily mean TP flux',
+  'Reach TP concentration',
+  'Reach daily mean SRP flux',
+  'Reach SRP concentration',
+
+  #Other
+  'Precipitation falling as rain',
+  #'Potential daily snowmelt',
+  'Hydrological input to soil box',
+  'Infiltration excess',
+
+  #Input to Water Body
+  'PP flux to water body',
+  'SS flux to water body')
+
+
+all.output.names.short <- c(  # Hydrology
+  "Ag SW Flow","Ag SW Vol","S-N SW Flow","S-N SW Vol",
+  "LU wtd SW Flow","GW Flow","GW Vol","Q In Upstream",
+  "Q In Land","Q Vol","Q Flow day","Q Flow Mean m3/s",
+  "Q Flow Mean mm/d",
+
+  # Sediment
+  "Veg Cov-arable","Veg Cov-IG",
+  "Veg Cov-SN","Sed In-arable","Sed In-IG","Sed In-SN",
+  "Sed In All","SS Flux","SS Input","SS Mass","SS Mean Flux","SS Conc",
+
+  # Phosphorus
+  "Soil P sorp","Ag SW EPCO","Ag Soil TDP Mass","Ag Soil Labile P Mass",
+  "New-Con SW Flow","New-Con SW Vol","New-Conv SW EPCO","New-Conv Soil TDP Mass",
+  "New-Con Soil Labile P Mass","Ag SW TDP conc-arable","Ag SW TDP conc-IG",
+  "Ag SW TDP conc-SN","Ag SW EPC0-arable","Ag SW EPC0-IG","Ag SW EPC0-SN",
+  "Ag Soil Labile P Conc-arable","Ag Soil Labile P Conc-IG",
+  "Ag Soil Labile P Conc-SN","TDP Flux","TDP Mass","TDP Conc","TDP mean Flux",
+  "PP Flux","PP Mass","PP Conc","PP mean Flux","TP mean Flux","TP Conc",
+  "SRP mean Flux","SRP Conc",
+
+  # Other
+  "Rain",#"Pot. Snowmelt",
+  "Hydro Input to Soil","Infil Excess",
+  "PP Flux to Water Body","SS Flux to Water Body")
+
+# Classifications for output variables, by watershed, Land Use
+all.output.indices <- list(# Hydrology
+  "Coull","Coull","Coull","Coull","Coull","Coull","Coull",
+  "Coull","Coull","Coull","Coull","Coull","Coull",
+
+  # Sediment
+  c("Coull","Arable"),c("Coull","Improved grassland"),
+  c("Coull","Semi-natural"),
+  c("Coull","Arable"),c("Coull","Improved grassland"),
+  c("Coull","Semi-natural"),
+  "Coull","Coull","Coull","Coull","Coull","Coull",
+
+  # Phosphorus
+  "Coull","Coull","Coull","Coull","Coull","Coull","Coull",
+  "Coull","Coull",
+  c("Coull","Arable"),c("Coull","Improved grassland"),
+  c("Coull","Semi-natural"),
+  c("Coull","Arable"),c("Coull","Improved grassland"),
+  c("Coull","Semi-natural"),
+  c("Coull","Arable"),c("Coull","Improved grassland"),
+  c("Coull","Semi-natural"),
+  "Coull","Coull","Coull","Coull","Coull","Coull",
+  "Coull","Coull","Coull","Coull","Coull","Coull",
+
+  # Other
+  none, #none,
+  none,none,
+  # Input to Water Body
+  none,none)
+
+ttl.outputs <- length(all.output.names)
+cat("Number of output time series=",ttl.outputs," which are \n")
+print(all.output.names)
+
+```
+
+<hr style="border:2px solid blue">
+
+### 5. Selected Outputs for GSA
+```{r, Selected par and output, eval=TRUE, echo=FALSE}
+# The outputs of primary interest; removed TDP Mass and PP Mass
+
+selected.outputs <- c(
+  "Reach flow (daily mean, cumecs)",
+  "Reach suspended sediment concentration",
+  "Reach TDP concentration",
+  "Reach PP concentration" )
+
+num.selected.outputs <- length(selected.outputs)
+
+# Get the positions for correct match on indices
+pos <- match(selected.outputs,all.output.names)
+
+# selected.outputs.indices <- list( "Coull", "Coull","Coull", "Coull")
+selected.outputs.indices <- all.output.indices[pos]
+
+# These names are at odds with the log transformed values
+# Log Flow Log SS Conc Log TDP Conc Log PP Conc
+chosen.vars <- c( "Flow", "SS Conc","TDP Conc", "PP Conc")
+
+if(verbose) {
+  # This is a check 
+  cat("The number of selected outputs is",num.selected.outputs,"\n")
+  cat("output name positions and names \n")
+  print(pos)
+  all.output.names[pos]
+  cat("Outputs of focus \n")
+  print(cbind(selected.outputs))
+  cat("Indices \n")
+  print(unlist(selected.outputs.indices))
+  cat("short names \n")
+  print(all.output.names.short[pos])
+  cat("for plots \n")
+  print(chosen.vars)
+}
+
+```
+
+<hr style="border:2px solid blue">
+
+### 6. Load Exogenous Forcing Factors, Field Obs'ns and Produce TS plots
+```{r, Tarland Data, eval=TRUE, echo=FALSE}
+#---- (3) Load Tarland data: raw and an R matrix  ---------
+# raw.input is needed when use performance
+# based measure, like KGE, for SA.
+
+raw.input <- readLines(con=paste0(Data.path, "TarlandInputs.dat"))
+
+#----------The raw Data components ------------------------
+# "observed Q"  unit "m^3/s" range 0.17 to 10.8, median=0.88
+# "observed Q mm/d" unit "mm/day"
+# "observed SS"  unit "mg/l" range is 0.5 to 534, median=6
+# "observed TDP" unit "mg/l" range is 0.005 to 0.1, median=0.025
+# "observed PP"  unit "mg/l" range is 0001 to 0.466, median = 0.014
+
+# Load RData file with Tarland data as a df
+load(file=paste0(Data.path,"Tarland_data_matrix.RData"))
+ 
+cat("Size of Tarland Data Matrix",dim(Tarland.data.matrix),"\n")
+head(Tarland.data.matrix,n=3)
+
+# Time series plots of main inputs
+ pdf(file=paste0(Input.Data.Figures,"SimplyP_InputVar_TS.pdf"))
+ Date.ts <- as.Date(row.names(Tarland.data.matrix),format="%Y-%m-%d")
+ Year.Data <- year(Date.ts)
+ Temp.ts <- Tarland.data.matrix[,"Temperature"]
+ Temp.ts <- ts(Temp.ts,start=lubridate::decimal_date(ymd(Date.ts[1])),
+              frequency=365)
+ PET.ts <- Tarland.data.matrix[,"PET"]
+ PET.ts <- ts(PET.ts,start=lubridate::decimal_date(ymd(Date.ts[1])),
+              frequency=365)
+ Precip.ts <- Tarland.data.matrix[,"Precipitation"]
+ Precip.ts <- ts(Precip.ts,start=lubridate::decimal_date(ymd(Date.ts[1])),
+              frequency=365)
+ plot.ts(Temp.ts,xlab="Time",ylab="",main="Input: Temperature ts")
+ plot.ts(PET.ts,xlab="Time",ylab="",main="Input: PET ts")
+ plot.ts(Precip.ts,xlab="Time",ylab="",main="Input: Precip ts")
+ pairs(cbind(Temp.ts,PET.ts,Precip.ts))
+ dev.off()
+ 
+
+# Just 2004 data
+
+Precip.ts.2004   <- Precip.ts[year(Date.ts)==2004]
+day.seq <- c(97,200,225,232)
+pdf(file=paste0(Input.Data.Figures,"SimplyP_InputVar_TS_2004.pdf"))
+ plot.ts(Precip.ts.2004,xlab="Time",ylab="",main="Precip ts 2004")
+ abline(v=day.seq,lty=2:5,col=2:5,lwd=2)
+ legend("topleft",legend=paste(day.seq,"Precip=",Precip.ts.2004[day.seq]),
+        lty=2:4,col=2:4,lwd=2)
+ 
+ Q.ts <- Tarland.data.matrix[,"Obs.Q"]
+ Q.ts <- ts(Q.ts,start=lubridate::decimal_date(ymd(Date.ts[1])),frequency=365)
+ Q.ts.2004 <- Q.ts[year(Date.ts)==2004]
+ plot.ts(Q.ts.2004,xlab="Time",ylab="",main="Outflow ts 2004")
+ abline(v=day.seq,lty=2:5,col=2:5,lwd=2)
+ legend("topleft",legend=paste(day.seq,"Log Q=",
+      round(Q.ts.2004[day.seq],3)),lty=2:4,col=2:4,lwd=2)
+
+ dev.off()
+
+if(verbose) {
+ # Look at how Precip and non-Log Outflow "track"
+ Precip.cumul <- ecdf(x=Precip.ts.2004)
+ Q.cumul      <- ecdf(x=exp(Q.ts.2004))
+ plot(Precip.cumul,main="ECDF Precipitation",pch=1)
+ plot(Q.cumul,main="ECDF Outflow")
+
+ Precip.cumul.std <- ecdf(x=scale(x=Precip.ts.2004))
+ Q.cumul.std      <- ecdf(x=scale(x=exp(Q.ts.2004)))
+
+ Precip.std <- as.vector(scale(x=Precip.ts.2004))
+ Q.std      <- as.vector(scale(x=exp(Q.ts.2004)))
+ my.ylim    <- range(c(Precip.std,Q.std),na.rm=TRUE)
+ plot(Precip.std,col="black",type="l",main="Precipitation and Outflow 2004",
+     ylim=my.ylim,ylab="",xlab="Day of year")
+ lines(Q.std,col="blue",type="l",lty=2)
+ legend("topleft",legend=c("Precipitation","Outflow"),lty=1:2,
+        col=c("black","blue"))
+ dev.copy2pdf(file=paste0(Input.Data.Figures,"Precip_Q.pdf"))
+
+
+ plot(Precip.cumul.std,main="ECDF Precipitation and Outflow",pch=1)
+ lines(Q.cumul.std,lty=2,col="blue",pch=2)
+ legend("bottomright",legend=c("Precipitation","Outflow"),lty=1:2,
+        col=c("black","blue"),pch=1:2)
+}
+
+
+if(verbose) {
+  # Time series plots of outputs
+  # 2004 is the most complete year. PP has nothing in other  years
+  custom.count.not.NA <- function(x) sum(!is.na(x))
+
+  pdf(file=paste0(Input.Data.Figures,"SimplyP_Field_Obs_TS.pdf"))
+  #Obs.Q Obs.log.SS Obs.TDP Obs.log.PP
+  Q.ts <- Tarland.data.matrix[,"Obs.Q"]
+  #sapply(split(Q.ts,Year.Data),custom.count.not.NA)
+  ## 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 
+  ##    0   15  359  348  337  344  365  360  356  365  365  366  365  358
+  Q.ts <- ts(Q.ts,start=lubridate::decimal_date(ymd(Date.ts[1])),frequency=365)
+
+  SS.ts <- Tarland.data.matrix[,"Obs.log.SS"]
+  #sapply(split(SS.ts,Year.Data),custom.count.not.NA)
+  ## 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 
+  ##    0    3   23   30   37   49   51  285  163    7    3    4    5    3
+  SS.ts <- ts(SS.ts,start=lubridate::decimal_date(ymd(Date.ts[1])),
+            frequency=365)
+
+  TDP.ts <- Tarland.data.matrix[,"Obs.TDP"]
+  #sapply(split(TDP.ts,Year.Data),custom.count.not.NA)
+  ## 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 
+  ##    0    0    0   21   38    8   16  286  163    7    3    4    5    3
+  TDP.ts <- ts(TDP.ts,start=lubridate::decimal_date(ymd(Date.ts[1])),
+              frequency=365)
+
+  PP.ts <- Tarland.data.matrix[,"Obs.log.PP"]
+  #sapply(split(PP.ts,Year.Data),custom.count.not.NA)
+  ## 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 
+  ##    0    0    0    0    0    0    0  271  157    0    0    0    0    0
+  PP.ts <- ts(PP.ts,start=lubridate::decimal_date(ymd(Date.ts[1])),
+              frequency=365)
+
+  plot.ts(Q.ts,xlab="Time",ylab="",main="Output: Q ts")
+  plot.ts(SS.ts,xlab="Time",ylab="",main="Output: log(SS) ts")
+  plot.ts(TDP.ts,xlab="Time",ylab="",main="Output: TDP ts")
+  plot.ts(PP.ts,xlab="Time",ylab="",main="Output: log(PP) ts")
+  pairs(cbind(Q.ts,SS.ts,TDP.ts,PP.ts))
+  dev.off()
+  
+}
+
+# - Specify the start and end dates from the observed data
+obs.start.date <- ymd(row.names(Tarland.data.matrix))[1]
+obs.end.date   <- ymd(tail(row.names(Tarland.data.matrix),n=1))
+all.obs.dates <- seq(obs.start.date,obs.end.date,by=1)
+
+```
+
+<hr style="border:2px solid blue">
+
+### 7. Remove linked params before w/ Morris, Sobol, Variogram, or Regression
+```{r, Remove linked params, eval=TRUE, echo=TRUE}
+ linked.removed <- c(6,9,10,17)
+ selected.parameters.red <- selected.parameters[-linked.removed]
+ selected.parameters.indices.red <- selected.parameters.indices[-linked.removed]
+ selected.parameters.names.red <- selected.parameters.names[-linked.removed]
+ num.params.red <- length(selected.parameters.red)
+ params.low.red  <- params.low[-linked.removed]
+ params.high.red <- params.high[-linked.removed]
+
+```
+
+<hr style="border:2px solid blue">
+
+### 8. Generate Multiple Parameter Combinations w/ Morris, Sobol, Variogram (VARS-TO), or Regression
+```{r,Multiple Params,eval=TRUE,echo=TRUE}
+# Some of object names are redundant/superfluous remnants of older code
+ParamBounds           <- rbind(params.low.red,params.high.red)
+colnames(ParamBounds) <- selected.parameters.names.red
+
+switch(choice,
+       
+ # ----------------- Morris w/ sensitivity package -----------------
+ Morris = {
+  # num.reps set above
+  num.levels  <- 30  
+  grid.jump   <- round(num.levels/2)
+  low.set     <- ParamBounds[1,]   
+  hi.set      <- ParamBounds[2,]
+  binf        <- rep(0,num.params.red)
+  bsup        <- rep(1,num.params.red)
+
+  x.Morris<- sensitivity::morris(
+      model=NULL,
+      factors=num.params.red,
+      r=num.reps,
+      design=list(type="oat",levels=num.levels,
+                  grid.jump=grid.jump),
+      binf=binf,bsup=bsup)
+  
+  
+  par.sample <- x.Morris$X
+  cat("Morris: number of distinct combinations \n")
+  print(range(apply(par.sample,2,n_distinct)))
+  cat("-----Morris, number of combinations \n",dim(par.sample))
+  
+  },
+
+ # ------------ Sobol' with sensobol package -----------------
+ Sobol = {
+   #N set above; num.comb will be close to target.N
+   R <- NULL
+   order <- "first"
+   par.sample <- sensobol::sobol_matrices(N=N,
+           params=selected.parameters.names.red,
+           order=order)
+   cat("Sobol: targetN=",target.N,"actual numb.comb=",
+       nrow(par.sample),"\n")
+ },
+
+ 
+ # ---------- VARS-TO with sensobol package ----------------
+ VARS.TO = {
+   #star.centers and h were set above 
+   par.sample <-
+     sensobol::vars_matrices(star.centers=star.centers,
+  h=h,
+                            params=selected.parameters.names.red)
+  },
+ 
+  # ----------------- Regression -----------------
+ Regression = { 
+   # num.comb was set above
+   par.sample <- maximinLHS(n=num.comb,k=num.params.red)
+   dimnames(par.sample) <- list(NULL,selected.parameters.red)
+ }
+)
+
+# -------- End Block for choices on data gen per SA method ----
+
+ # Now rescale each column of the parameter combos matrix
+ for(i in 1:num.params.red) {
+   par.range <- diff(ParamBounds[,i])
+   par.sample[,i] <- par.sample[,i]*par.range +
+                           ParamBounds[1,i]
+ }
+
+# Naming and printing out number of combinations
+ dimnames(par.sample) <- list(NULL,selected.parameters.names.red)
+ num.comb <-  nrow(par.sample)
+ cat("Number of parameter combinations=",num.comb,"using",choice,"\n")
+ head(par.sample,n=4)
+
+ #Saving the Inputs to SimplyP runs in "Choice"_comb.RData file
+ switch(choice,
+     #need x.Morris when use tell function
+   Morris = {
+    save(num.comb,par.sample,selected.parameters.names.red,x.Morris,
+            file=paste0(Output,"Morris_SimplyP_comb.RData")) 
+           },
+         
+   Sobol = {
+             save(N,R,order,num.comb,par.sample,
+                  selected.parameters.names.red,
+              file=paste0(Output,"Sobol_SimplyP_comb.RData"))
+         },
+         
+   VARS.TO = {   
+              save(num.comb,par.sample,selected.parameters.names.red,
+                         star.centers,h,
+               file=paste0(Output,"VARSTO_SimplyP_comb.RData"))
+          },
+        
+   Regression = {
+       save(num.comb,par.sample,selected.parameters.names.red,
+               file=paste0(Output,"Regression_SimplyP_comb.RData"))
+        }
+      )
+    
+    
+    if(verbose) {
+      par(mfrow=c(2,3),oma=c(0,0,3,0))
+      for(i in 1:num.params.red) {
+        hist(par.sample[,i],main=selected.parameters.names.red[i],
+             xlab="",ylab="")
+      }
+      mytitle(paste("Dist'ns of",num.comb,
+                    "parameter values for",choice))
+      par(oma=c(0,0,0,0))
+    }
+
+```
+
+<hr style="border:2px solid blue">
+
+### 8-after Define params.sample to have linked param values inserted
+```{r, Insert Linked Params,eval=TRUE,echo=TRUE}
+# This is inserting the copies of TS_a, FC_a (twice)
+params.sample        <- par.sample[,c(1:5,5,6,7,7,7,8:13,13)]
+names(params.sample) <- selected.parameters.names
+cat("dim of params.sample=",dim(params.sample),"\n")
+
+```
+
+<hr style="border:2px solid blue">
+
+### 9. Make Multiple Runs to create Output file for SA
+```{r, Multiple Runs, eval=TRUE,echo=TRUE}
+# Now Run SimplyP with these num.comb of parameters
+#Modified parameter and input file passing to previously named files
+
+# cat("num.output.vars",num.selected.outputs,"\n")
+# print(selected.outputs)
+# print(chosen.vars)
+# print(unlist(selected.outputs.indices))
+
+verbose.opt <- TRUE
+
+# trying out other mobius functions
+ none <- vector(mode='character', length=0)
+ new.start.date <- '2004-01-01'
+ new.end.date   <- '2004-12-31'
+ date.seq       <- seq(ymd(new.start.date), ymd(new.end.date),by=1)
+ num.timesteps  <- length(date.seq)
+ cat("num.timesteps=",num.timesteps,"\n")
+ cat("Dates of runs=",new.start.date,new.end.date,"\n")
+ 
+ # Run SimplyP locally now, not calling custom function
+ mobius_setup_from_parameter_and_input_file(
+    ParameterFileName=Tarland_Par_File_Name,
+    InputFileName=Tarland_Inputs_File_Name)
+ 
+#29 Feb 2024:   need to update the times; NOTE: the dates get set in the
+# mobius_setup_from_parameter_and_input_file
+mobius_set_parameter_time(Name     = 'Start date',
+                          IndexesIn= none,
+                          Value    = new.start.date)
+mobius_set_parameter_time(Name     = 'End date', 
+                          IndexesIn= none, 
+                          Value    = new.end.date)
+
+ output.array <- array(data=NA,
+          dim=c(num.selected.outputs,num.comb,num.timesteps),
+          dimnames=list(chosen.vars,NULL,NULL))
+ cat("dimension of output.array=",dim(output.array),"\n")
+
+ for(i in 1:num.comb) {
+   if((i %% 1000) == 0) cat("Parameter combination",i,"\n")
+   
+   #This changes the parameter values
+   for(j in 1:num.params) {
+     temp <- selected.parameters.indices[[j]]
+     if( length(temp) == 1 & temp[1] =="none") {  #"none" index
+          mobius_set_parameter_double(
+            Name=selected.parameters[j],
+            IndexesIn= none,
+            Value = params.sample[i,j])
+      } else {                                     # Reach or Landscape index
+           mobius_set_parameter_double(
+             Name=selected.parameters[j],
+             IndexesIn=selected.parameters.indices[[j]],
+             Value=params.sample[i,j])
+       }
+   }
+   
+   mobius_run_model()
+ 
+   # Extract the Outputs and put into array
+   
+     for(j in 1:num.selected.outputs) {
+       temp <-  mobius_get_result_series(
+           Name=selected.outputs[j],
+           IndexesIn=selected.outputs.indices[[j]])
+       output.array[j,i,] <- temp
+       if(i <= 2) {
+         cat("output for",selected.outputs[j],"\n")
+         print(output.array[j,i,201:205])
+       }
+     }
+ }
+ 
+ # changing all outputs to log(x+1)
+ output.array <- log(output.array+1)
+ dimnames(output.array)[[1]] <- paste("Log",dimnames(output.array)[[1]])
+
+ cat("dimension of output=",dim(output.array),"\n")
+
+```
+
+<hr style="border:2px solid blue">
+
+### 10. Plotting thinned output- for a visual
+```{r, Plot thinned output,eval=TRUE, echo=FALSE}
+# produce plots of thinned output
+# output.array has output variable, then parameter combos, then days
+#thinning <- 0.10*num.comb
+thinning <- 50
+red.set <- sample(1:num.comb,thinning,replace=FALSE)
+
+switch(choice,
+    Morris = {
+      pdf(file=paste0(Output,"Morris_SimplyP_Outputs_",
+                 num.comb, "_Combinations.pdf"))
+     },
+    
+    Sobol = {
+       pdf(file=paste0(Output,"Sobol_SimplyP_Outputs_",
+                 num.comb, "_Combinations.pdf"))
+   },
+
+    VARS.TO = {    
+         pdf(file=paste0(Output,"VARSTO_SimplyP_Outputs_",
+                 num.comb, "_Combinations.pdf"))
+
+    },
+    
+    Regression = {
+         pdf(file=paste0(Output,"Regression_SimplyP_Outputs_",
+                 num.comb, "_Combinations.pdf"))
+
+    }
+  )
+  
+
+par(mfrow=c(2,2),oma=c(0,0,3,0))
+day.seq <- 100:350
+for(i in 1:num.selected.outputs) {
+  temp <- output.array[i,red.set,day.seq]
+  my.ylim <- range(temp)
+  plot(day.seq,temp[1,],xlab="Day of Year",ylab="",
+       main=dimnames(output.array)[[1]][i],ylim=my.ylim,type="l")
+  for(j in 2:nrow(temp)) {
+    lines(day.seq,temp[j,],col=j,lty=j)
+  }
+}
+mtext(text=paste0(choice," Sample of ",thinning, 
+  " predictions from ",num.comb," combinations"),side=3,outer=TRUE)
+dev.off()
+
+```
+
+<hr style="border:2px solid blue">
+
+### 11. Save SimplyP output for GSA Evaluate
+```{r, Save SimplyPJ outputs,eval=TRUE, echo=TRUE}
+#  use save to save multiple R objects in .RData file
+#  use saveRds to save a single R object.
+
+ymat <- output.array   # this is 3-D, not a matrix...carryover from earlier work
+chosen.dates.char <- c(new.start.date,new.end.date)
+
+switch(choice,
+       Morris = {
+          save(ymat,output.array,chosen.vars,chosen.dates.char,
+          file=paste0(Output,"ymat_Morris_SimplyP.RData")) 
+         },
+       
+       Sobol = {
+          save(ymat,output.array,chosen.vars, chosen.dates.char,
+           file=paste0(Output,"ymat_Sobol_SimplyP.RData")) 
+        },
+       
+       VARS.TO = {
+           save(ymat,output.array,chosen.vars,chosen.dates.char,
+             file=paste0(Output,"ymat_VARSTO_SimplyP.RData"))
+      },
+      
+      Regression = {
+        save(ymat,output.array,chosen.vars,chosen.dates.char,
+             file=paste0(Output,"ymat_Regression_SimplyP.RData"))
+        }
+      )
+
+ 
+ if(verbose) {
+           cat("After save: size of output=",dim(ymat),
+           "number of outputs=",length(chosen.vars),
+           "number of dates=",length(chosen.dates.char),"\n")
+ }
+
+
+#just a check on loading output.array object
+# outfile.name <- paste0(Output,choice,"_output_array.RData")
+# load(file=outfile.name)
+# cat("Put output file in",outfile.name,"\n")
+# cat("Check on load, size of output.array=",dim(output.array),"\n")
+
+```
+
+<hr style="border:2px solid blue">
+
+### Elapsed Time 
+```{r, Elapsed Time, eval=TRUE}
+t2 <- proc.time()[3]
+cat(choice, "Time to make",num.comb,"SimplyP runs=",round((t2-t1)/60,1),
+    "minutes \n")
+
+## Morris Time to make 1008 SimplyP runs= 0.7 minutes
+## Sobol Time to make 15000 SimplyP runs= 2.4 minutes
+## VARS.TO Time to make 1062 SimplyP runs= 0.5 minutes
+## Regression Time to make 1000 SimplyP runs= 0.6 minutes
+
+```
+
+
