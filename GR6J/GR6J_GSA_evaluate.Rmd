@@ -22,8 +22,10 @@ Morris: scatterplots of variance vs mu.star, and barplots of DGSM
 Sobol: barplots of S_{1,k} and T_k
 VARS-TO; barplots of T_k
 Reg: barplots of SRC
-RegTree/Random Forest: Variable importance plots for both; regression tree; In chunk 8 heatswitch <- FALSE to NOT produce heatmap
+RegTree/Random Forest: Variable importance plots for both; regression tree; To produce heatmap of tree for Qsim, set heattree.on <- TRUE
 GPR:  Inverse range and SRC
+
+Set verbose <- TRUE below to see more intermediate output, etc.
 
 <hr style="border:2px solid blue">
 
@@ -32,15 +34,16 @@ GPR:  Inverse range and SRC
 dir.create(tempdir())
 t1 <- proc.time()[3]
 
-verbose <- TRUE
+verbose     <- FALSE
+heattree.on <- FALSE
 
 #--- Choosing type of SA -------------
-choice <- "Morris"
+# choice <- "Morris"
 # choice <- "Sobol"
 # choice <- "VARS.TO"
 # choice <- "Reg.analysis"
 # choice <- "RegTree.RF.analysis"
-#  choice <- "GPR.analysis"
+choice <- "GPR.analysis"
 
 root       <- "D:/GR6J/"
 Rcode.path <- paste0(root,"R Code/") 
@@ -144,6 +147,11 @@ switch(choice,
      
       RegTree.RF.analysis = {
         RegTree.RF.eval   <- TRUE; RegTree.RF.eval  <- TRUE
+        if(heattree.on) {
+          heatswitch <- TRUE
+        } else {
+          heatswitch <- FALSE
+        }
         Output.rf <-  paste0(Output,"5_RegTree_RF/")
         Output    <-  paste0(Output,"4_Regression/")
         load(file=paste0(Output,"regression_GR6J_comb.RData")) 
@@ -160,11 +168,11 @@ switch(choice,
      }
     )
  
-# If truncating outputs, need to modify Sobol evaluation
+# Truncating outputs, and then Sobol evaluations modified below
 cat("full ymat \n")
 head(ymat)
 
-ymat <- ymat[,1:3] # data used in paper
+ymat <- ymat[,1:3] # data used in Environmental & Modelling SW
 num.outputs  <- ncol(ymat)
 output.names <- dimnames(ymat)[[2]]
 
@@ -174,7 +182,7 @@ output.names <- dimnames(ymat)[[2]]
  
 ### 2. Obs'd Data loaded for KGE calculations
 Load catchment data or create BasinObs (data.frame of daily hydrometeorological observations time series)
-```{r, 2. Data Load, eval=KGE.switch, echo=KGE.switch,warning=FALSE, message=FALSE}
+```{r, 2. Data Load, eval=KGE.switch, echo=FALSE,warning=FALSE, message=FALSE}
 #DatesR: dates in the POSIXt format
 #P: average precipitation [mm/day]
 #T: catchment average air temperature [???] Optional, required for snow model
@@ -193,7 +201,7 @@ BasinObs$E <- BasinObs$PE_oudin
 <hr style="border:2px solid blue">
 
 ### 3. Calculate KGE Metric only for Q "outflow" (QSim vs Qmm)
-```{r, 3. KGE Metric, eval=KGE.switch, echo=KGE.switch}
+```{r, 3. KGE Metric, eval=KGE.switch, echo=FALSE}
 # using y.Qsim.mat
 # Field data, want Qmm for the same dates as in the columns of y.Qsim.mat
 ##          DatesR         P          E       Qls      Qmm          T   PE_oudin
@@ -366,19 +374,13 @@ print(summary(KGE.metric))
                           boot=TRUE,R=R,type=type,conf=conf)
 
      Sobol.indices.list[[i]] <- indices
-       #print(names(indices)) #"results" "si.sum"  "first"   "total"   "C"
-       # results has the matrix, si.sum=sum over Si?, first & total=types
-       # cat("results \n")
-       # print(indices$"results")
-       # print(class(indices$"results")) #"data.table" "data.frame"
-
+   
      ok <- indices$results$sensitivity == "Si"
      Sobol.Results.Si[,i] <- indices$results$original[ok]
      ok <- indices$results$sensitivity == "Ti"
      Sobol.Results.Ti[,i] <- indices$results$original[ok]
   }
 
-  
   names(Sobol.indices.list) <- output.names
   print(Sobol.Results.Ti)
   
@@ -470,9 +472,7 @@ print(names(Sobol.indices.list))
      ggtitle(label="KGE.Q.Sobol") +   guides(scale="none")
    print(p.KGE)
    dev.copy2pdf(file=paste0(Output,"Sobol_GR6J_KGE_Q.pdf"))
-    
-    
-   }  
+  }  
  
 ```
 
@@ -657,8 +657,6 @@ if(KGE.switch) {
 
 ### 8. RegTree and Random Forest analysis and produce plots
 ```{r, 8. Random Forest Analysis, eval=RegTree.RF.eval,echo=RegTree.RF.echo}
-
-  heatswitch <- FALSE # 8 Aug 2025 to speed processing
 
   ymat <- as.matrix(ymat)
   num.outputs  <- ncol(ymat)
@@ -925,17 +923,6 @@ for(i in 1:num.outputs) {
    }
   }
 
- # par(mfrow=c(1,2),oma=c(0,0,3,0))
- #  for(i in 1:num.outputs) {
- #   barplot(GPR_Results_invrange[,i],names.arg=parameter.names,
- #      main=paste("Inv range:",output.names[i]),cex.names=0.9)
- #   barplot(abs(GPR_Results_slope[,i]),names.arg=parameter.names,
- #      main=paste("Abs slope:",output.names[i]),cex.names=0.9)
- #   dev.copy2pdf(file=paste0(Output.GPR,"GR6J_GPR_",
- #                            substr(output.names[i],1,3),".pdf"))
- #  }
- 
- #mytitle("GPR: Inverse Range & Slope")
  par(mfrow=c(1,1))
   
  
@@ -945,16 +932,16 @@ for(i in 1:num.outputs) {
 <hr style="border:2px solid blue">
 
 ### Elapsed Time 
-```{r, Elapsed Time, eval=TRUE}
+```{r, Elapsed Time, eval=TRUE, echo=FALSE}
 t2 <- proc.time()[3]
 cat("GR6J",choice,"Time to evaluate=",round((t2-t1)/60,1),
     "minutes for",num.comb,"combos \n")
 ## GR6J Morris Time to evaluate= 0.1 minutes for 1001 combos
-## GR6J Sobol Time to evaluate= 0.2 minutes for 10000 combos
+## GR6J Sobol Time to evaluate= 0.1 minutes for 1000 comboss
 ## GR6J VARS.TO Time to evaluate= 0.1 minutes for 1045 combos
 ## GR6J Reg.analysis Time to evaluate= 0.2 minutes for 1000 combos
 ## GR6J RegTree.RF.analysis Time to evaluate= 0.6 minutes for 1000 combos
-## GR6J GPR.analysis Time to evaluate= 16.9 minutes for 1000 combos #actually 500
+## ## GR6J GPR.analysis Time to evaluate= 4.1 minutes for 1000 combos #actually 500
 
 ```
 
