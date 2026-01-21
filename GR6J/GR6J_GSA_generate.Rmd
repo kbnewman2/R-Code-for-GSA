@@ -32,22 +32,23 @@ Notes:
 (2) Set verbose=TRUE (in Chunk 1) for more details.
 (3) Can turn off Chunk 7. EDA on Trial Run output (eval=FALSE) to reduce output
 (4) For real data run (default), Chunk 8A is off and Chunk 8B is on.
+(5) EDA in Chunk 7 is turned off; set eval=TRUE to run.
   
 <hr style="border:2px solid blue">
 
 ### 1. Packages and Paths
-```{r, 1. Initial, eval=TRUE, include=FALSE, warning=FALSE,messages=FALSE}
+```{r, 1. Initial, eval=TRUE, echo=FALSE,include=FALSE, warning=FALSE,messages=FALSE}
 dir.create(tempdir())
 t1 <- proc.time()[3]
 
-verbose <- TRUE
+verbose <- FALSE
 
 #--- Set number of combination and choose type of SA -------------
 target.N  <- 1000 
 # choice <- "Morris"
-choice <- "Sobol"
+# choice <- "Sobol"
 # choice <- "VARS.TO"
-# choice <- "Regression"
+choice <- "Regression"
 
 ## load packages
 library(airGR)        # Suite of GR Hydrological Models for
@@ -66,13 +67,18 @@ Output     <- paste0(root,"Output/")
 
 mytitle <- function(x) graphics::mtext(text=x,side=3,outer=TRUE)
 
+Morris.eval     <- FALSE; Morris.echo     <- FALSE
+Sobol.eval      <- FALSE; Sobol.echo      <- FALSE
+VARS.TO.eval    <- FALSE; VARS.TO.echo    <- FALSE
+Regression.eval <- FALSE; Regression.echo <- FALSE
+
 ```
 
 <hr style="border:2px solid blue">
  
 ### 2. Data loading: includes values for performance based SA (NSE/KGE)
 Load catchment data or create BasinObs (data.frame of daily hydrometeorological observations time series)
-```{r, 2. Data Load, eval=TRUE, echo=TRUE}
+```{r, 2. Data Load, eval=TRUE, echo=FALSE}
 #DatesR: dates in the POSIXt format
 #P:      average precipitation [mm/day]
 #T:      catchment average air temperature [???] Optional, required for snow model
@@ -139,12 +145,7 @@ ParamRanges <- ParamBounds[2,]-ParamBounds[1,]
 <hr style="border:2px solid blue">
 
 ### 4. Sets number of combinations based on Target.N 
-```{r, 4. num.comb, message=FALSE, eval=TRUE}
-
-Morris.eval     <- FALSE; Morris.echo     <- FALSE
-Sobol.eval      <- FALSE; Sobol.echo      <- FALSE
-VARS.TO.eval    <- FALSE; VARS.TO.echo    <- FALSE
-Regression.eval <- FALSE; Regression.echo <- FALSE
+```{r, 4. num.comb, message=FALSE, eval=TRUE, echo=FALSE}
 
 # Note: save intermediate outputs, etc for later read by GR6J_GSA_evaluate.Rmd
 # To have number of combinations similar
@@ -194,7 +195,7 @@ Regression.eval <- FALSE; Regression.echo <- FALSE
 <hr style="border:2px solid blue">
 
 ### 5. Create InputsModel object and set dates of (a) warmup and (b) run
-```{r, 5. Prepare InputModel object, eval=TRUE, echo=TRUE}
+```{r, 5. Prepare InputModel object, eval=TRUE, echo=FALSE}
 InputsModel<- airGR::CreateInputsModel(FUN_MOD = RunModel_GR6J, 
                 DatesR  = BasinObs$DatesR,
                 Precip  = BasinObs$P, 
@@ -256,7 +257,7 @@ GR6J_Results <- airGR::RunModel(
 <hr style="border:2px solid blue">
 
 ### 7. EDA on Trial Run output time series and relationships
-```{r, 7. Plot Outputs, eval=TRUE, echo=TRUE}
+```{r, 7. Plot Outputs, eval=FALSE, echo=FALSE}
 # Examine the outputs 
 # See ?RunModel_GR6J for details on outputs
 
@@ -357,7 +358,7 @@ Only run 8A or 8B, not both
 
 ### 8B. Real Run: Generating parameter combinations for Morris, Sobol, Variogram SA, or Regression. Then run in #9.
 The total number of parameter combinations gets set here.
-```{r, 8B. Param combinations, eval=TRUE}
+```{r, 8B. Param combinations, eval=TRUE,echo=FALSE}
 # -------- Block for choices on data gen per SA method ----
 # In every case, produces matrix par.sample[,], rescaled from [0,1]
  
@@ -465,8 +466,10 @@ switch(choice,
 
 <hr style="border:2px solid blue">
 
-### 9. Making multiple runs with different param combinations, and selecting output to use for tGSA
-```{r, 9. Multiple Runs, eval=TRUE, echo=TRUE}
+### 9. Making multiple runs with different param combinations, and selecting output to use for GSA evaluation
+```{r, 9. Multiple Runs, eval=TRUE, echo=FALSE}
+
+cat("Making multiple runs with GR6J \n")
 
 # Drier and wetter periods
 chosen.vars       <- c("PR","Q9","Qsim")
@@ -539,9 +542,6 @@ if(verbose) {
                 num.comb,"combinations of",num.params,"parameters"))
   par(mfrow=c(1,1))
   
-  # cat("output of Qsim for KGE \n")
-  # print(y.Qsim.mat[1:3,1:5])
-  # print(y.Qsim.mat[(num.comb-3):num.comb,1:5])
 }
 
 ```
@@ -549,7 +549,7 @@ if(verbose) {
 <hr style="border:2px solid blue">
 
 ### 10. Saving GR6J outputs
-```{r, 10. Save GR6J outputs,eval=TRUE}
+```{r, 10. Save GR6J outputs,eval=TRUE,echo=FALSE}
 switch(choice,
        Morris = {
           save(ymat,chosen.vars,chosen.dates.char,y.Qsim.mat, 
@@ -577,13 +577,13 @@ switch(choice,
 <hr style="border:2px solid blue">
 
 ### Elapsed time
-```{r, Elapsed time, eval=TRUE}
+```{r, Elapsed time, eval=TRUE,echo=FALSE}
 t2 <- proc.time()[3]
 cat("GR6J",choice,"time=",round((t2-t1)/60,2),
     "Minutes w/",num.comb,
     "param combos \n")
 ## GR6J Morris time= 0.48 Minutes w/ 1001 param combos
-## GR6J Sobol time= 0.48 Minutes w/ 1000 param combos
+## GR6J Sobol time= 0.37 Minutes w/ 1000 param combos
 ## GR6J VARS.TO time= 0.54 Minutes w/ 1045 param combos
 ## GR6J Regression time= 0.54 Minutes w/ 1000 param combos
 
